@@ -29,7 +29,7 @@ trips and renders, checked by tests, not against After Effects), **partial** (na
 | Animation preset `.ffx` | R/W, 621 bundled | none | none | Own JSON `.ecpreset`; `.ffx` is out of clean-room scope (AGENTS.md §2) | `animation.rs` tests |
 | Render Settings / Output Module templates `.ars` / `.aom` | R/W | none | none | Templates are stored in the project and settings instead | `render_templates.rs` tests |
 | Scripts `.jsx` | R (run) | yes | — | After Effects object model and ScriptUI ([scripting-parity.md](scripting-parity.md)) | `crates/script` tests |
-| Binary scripts `.jsxbin` | R (run) | none | — | No public specification: out of scope | — |
+| Binary scripts `.jsxbin` | R (run) | partial | — | Bounded ES 1.0/2.0/2.1 loader; incomplete runtime parity. MIT-reference provenance requires maintainer policy review ([README](../crates/jsxbin/README.md)) | Original compiled fixtures in `crates/jsxbin` and `crates/script` |
 | Motion graphics JSON `.mgjson` | R (data) | none | none | Media Browser lists it; import accepts only `.json` / `.csv` / `.tsv` data | — |
 | Captions `.aecap`, graphics `.aegraphic` | R/W | none | none | — | — |
 | Native `.ecproj` | — | yes | yes | Versioned JSON; schema migrations tested; absolute footage paths, no relinking (gap 18) | engine project tests |

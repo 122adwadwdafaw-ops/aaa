@@ -179,6 +179,8 @@ pub struct ImageRef {
     /// Embedded bytes as a binary string (one character per byte, as in resource strings).
     pub data: Option<String>,
     pub name: String,
+    /// A disabled control without a supplied disabled image dims its normal image.
+    pub dimmed: bool,
 }
 
 impl ImageRef {
@@ -366,7 +368,7 @@ pub struct ScriptUiEvent {
     pub widget: u32,
     /// `click`, `change`, `changing` or `close`.
     pub kind: String,
-    /// The new value: text, number, bool, or selected index(es); for `close`, the result.
+    /// The new value; for `click`, optional mouse coordinates/modifiers; for `close`, the result.
     pub value: Value,
 }
 
@@ -439,13 +441,18 @@ fn orientation(w: &Widget) -> &str {
 }
 
 fn margins(w: &Widget) -> [f64; 4] {
-    w.margins.unwrap_or(match w.kind {
+    let mut m = w.margins.unwrap_or(match w.kind {
         WidgetKind::Window => [15.0; 4],
         WidgetKind::Panel => [10.0, 15.0, 10.0, 10.0],
-        WidgetKind::TabbedPanel => [0.0, 24.0, 0.0, 0.0],
         WidgetKind::Tab => [10.0; 4],
         _ => [0.0; 4],
-    })
+    });
+    // Tab headers occupy chrome outside the script's content margins. Explicit
+    // zero margins must not place the tab's controls underneath its header.
+    if w.kind == WidgetKind::TabbedPanel {
+        m[1] += 24.0;
+    }
+    m
 }
 
 fn spacing(w: &Widget) -> f64 {
@@ -662,7 +669,49 @@ pub(crate) fn click(s: &mut Session, p: &Value) -> Result<Value> {
     if !w.enabled {
         return Err(crate::commands::bad(c, format!("control {widget} is disabled")));
     }
-    dispatch(s, ScriptUiEvent { window, widget, kind: "click".into(), value: Value::Null })
+    let mut mouse = mouse_params(c, p)?;
+    if let Some(v) = p.get("pointerSequence") {
+        mouse["pointerSequence"] = json!(v.as_bool().ok_or_else(|| crate::commands::bad(c, "pointerSequence must be boolean"))?);
+    }
+    dispatch(s, ScriptUiEvent { window, widget, kind: "click".into(), value: mouse })
+}
+
+fn mouse_params(c: &str, p: &Value) -> Result<Value> {
+    let mut mouse = json!({});
+    if let Some(m) = p.get("mouse") {
+        if !m.is_object() {
+            return Err(crate::commands::bad(c, "mouse must be an object"));
+        }
+        for name in ["screenX", "screenY", "clientX", "clientY"] {
+            if let Some(v) = m.get(name) {
+                let n = v.as_f64().filter(|n| n.is_finite()).ok_or_else(|| crate::commands::bad(c, format!("mouse.{name} must be a finite number")))?;
+                mouse[name] = json!(n);
+            }
+        }
+        for name in ["shiftKey", "ctrlKey", "altKey", "metaKey"] {
+            if let Some(v) = m.get(name) {
+                mouse[name] = json!(v.as_bool().ok_or_else(|| crate::commands::bad(c, format!("mouse.{name} must be boolean")))?);
+            }
+        }
+    }
+    Ok(mouse)
+}
+
+/// Live pointer transitions, separate from activation so custom controls can redraw while held.
+pub(crate) fn pointer(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "scriptui.pointer";
+    let window = window_p(s, p, c)?;
+    let widget = widget_p(s, window, p, c)?;
+    let event = p.get("event").and_then(Value::as_str).unwrap_or("");
+    if !matches!(event, "mouseover" | "mouseout" | "mousedown" | "mouseup" | "mousemove" | "focus" | "blur") {
+        return Err(crate::commands::bad(c, "invalid pointer event"));
+    }
+    let mut value = mouse_params(c, p)?;
+    value["event"] = json!(event);
+    for name in ["hovered", "pressed", "focused"] {
+        value[name] = json!(p.get(name).and_then(Value::as_bool).ok_or_else(|| crate::commands::bad(c, format!("{name} must be boolean")))?);
+    }
+    dispatch(s, ScriptUiEvent { window, widget, kind: "pointer".into(), value })
 }
 
 /// `scriptui.set`: set a control's value (edit text, slider, checkbox, list selection) as the

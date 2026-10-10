@@ -257,7 +257,9 @@ Issues #41–#47 (all from the Linux AppImage 0.1.1, 5 October): panning the vie
   ([plugins.md](plugins.md#extension-points-compared-with-after-effects) compares them). ScriptUI
   panels in the user's ScriptUI Panels folder are listed in the Window menu, dock like any panel
   and open again at the next launch. Missing: the Startup and Shutdown script folders, keyboard
-  shortcuts for scripts, ExtendScript's `#include` / `#target` directives and `.jsxbin`.
+  shortcuts for scripts and ExtendScript's `#include` / `#target` directives. The proposed
+  `.jsxbin` loader is partial; its MIT-reference provenance needs maintainer policy review
+  ([coverage and limits](../crates/jsxbin/README.md)).
 - Done so far: ease presets (#254) cover what ease-curve plug-ins are used for: easing curves kept
   by name and applied to pairs of keyframes. Modelled on a third-party panel, they are not core: a
   ScriptUI panel bundled as an optional extension (`extensions/scriptui-panels/Ease Presets.jsx`,

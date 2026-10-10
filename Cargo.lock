@@ -533,8 +533,6 @@ dependencies = [
 [[package]]
 name = "boa_engine"
 version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d6aaf7fdc4299df68adb67e1a5440a51d34630a1f5271b9698fd74bc97b60d9"
 dependencies = [
  "aligned-vec",
  "arrayvec",
@@ -1375,6 +1373,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "effectcraft-jsxbin"
+version = "0.7.0"
+
+[[package]]
 name = "effectcraft-keyframe"
 version = "0.7.0"
 dependencies = [
@@ -1543,12 +1545,15 @@ dependencies = [
  "boa_engine",
  "effectcraft-engine",
  "effectcraft-expr",
+ "effectcraft-jsxbin",
  "effectcraft-keyframe",
  "effectcraft-path",
  "effectcraft-project",
  "effectcraft-render",
  "effectcraft-time",
+ "roxmltree",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]

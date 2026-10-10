@@ -310,9 +310,14 @@ function __uiImage(v) {
   if ((s.charCodeAt(0) === 0x89 && s.substr(1, 3) === "PNG") || (s.charCodeAt(0) === 0xff && s.charCodeAt(1) === 0xd8)) return new ScriptUIImage(null, s, "");
   return s ? new ScriptUIImage(s, null, "") : null;
 }
-function __uiImageJson(v) {
-  var img = __uiImage(v);
-  return img ? { src: img.src, data: img.data, name: img.name } : null;
+function __uiImageJson(v, control) {
+  var img = __uiImage(v), dimmed = false;
+  if (img && control) {
+    var state = __uiDrawState(control);
+    dimmed = !__uiEnabled(control) && !img.__disabled;
+    img = (!__uiEnabled(control) ? img.__disabled : state.leftButtonPressed ? img.__pressed : state.mouseOver ? img.__rollover : null) || img;
+  }
+  return img ? { src: img.src, data: img.data, name: img.name, dimmed: dimmed } : null;
 }
 
 var ScriptUI = {
@@ -324,9 +329,13 @@ var ScriptUI = {
   PenType: { SOLID_COLOR: 0, THEME_COLOR: 1 },
   Alignment: { LEFT: "left", RIGHT: "right", TOP: "top", BOTTOM: "bottom", CENTER: "center", FILL: "fill" },
   newFont: function (name, style, size) { return { name: name, style: style, size: size }; },
-  newImage: function (normal) { return __uiImage(normal); },
+  newImage: function (normal, disabled, pressed, rollover) {
+    var image = __uiImage(normal);
+    if (image) { image.__disabled = __uiImage(disabled); image.__pressed = __uiImage(pressed); image.__rollover = __uiImage(rollover); }
+    return image;
+  },
   getResourceText: function (t) { return t; },
-  events: { createEvent: function (t) { return { type: t }; } }
+  events: { createEvent: function (t) { return __uiEvent(t); } }
 };
 
 // A colour for the draw list: [r, g, b, a] in 0..1, or null for a theme colour (by name).
@@ -378,7 +387,7 @@ function __uiGraphics() {
       this.__push({ op: "text", text: String(text), color: pen ? pen.color : null, x: __num(x || 0), y: __num(y || 0), size: __uiFontSize(f, this), style: String(f && f.style !== undefined ? f.style : "") });
     },
     drawOSControl: function () { this.__push({ op: "os" }); },
-    drawImage: function (img, x, y, w, h) { this.__push({ op: "image", image: __uiImageJson(img), x: __num(x || 0), y: __num(y || 0), w: w === undefined ? 0 : __num(w), h: h === undefined ? 0 : __num(h) }); },
+    drawImage: function (img, x, y, w, h) { this.__push({ op: "image", image: __uiImageJson(img, this.__control), x: __num(x || 0), y: __num(y || 0), w: w === undefined ? 0 : __num(w), h: h === undefined ? 0 : __num(h) }); },
     drawFocusRing: function () {},
     measureString: function (s, font, boundaryWidth) {
       var size = __uiFontSize(font, this);
@@ -395,6 +404,24 @@ function __uiGraphics() {
   };
 }
 
+function __uiEnabled(c) {
+  var seen = [];
+  while (c) {
+    if (seen.length >= 128 || seen.indexOf(c) >= 0) throw new RangeError("ScriptUI ancestry limit exceeded");
+    seen.push(c);
+    if (c.enabled === false) return false;
+    c = c.parent;
+  }
+  return true;
+}
+function __uiDrawState(c) {
+  var p = c.__pointer || {}, enabled = __uiEnabled(c);
+  return {mouseOver: enabled && !!p.hovered, leftButtonPressed: enabled && !!p.pressed,
+    middleButtonPressed:false, rightButtonPressed:false, hasFocus:enabled && !!p.focused,
+    shiftKeyPressed:!!p.shiftKey, ctrlKeyPressed:!!p.ctrlKey, altKeyPressed:!!p.altKey,
+    optKeyPressed:!!p.altKey, cmdKeyPressed:!!p.metaKey, capsLockKeyPressed:false, numLockKeyPressed:false};
+}
+
 // Run the onDraw handlers of a window's controls (after laying it out, so `size` is known),
 // recording what they paint.
 function __uiRunDraws(win) {
@@ -409,8 +436,9 @@ function __uiRunDraws(win) {
     var c = drawn[k];
     c.__draw = [];
     c.graphics.__rec = c.__draw;
+    c.graphics.__control = c;
     try {
-      c.onDraw.call(c, { type: "draw", target: c });
+      c.onDraw.call(c, __uiDrawState(c));
     } catch (e) {
       try { writeLn("onDraw: " + (e && e.message ? e.message : e)); } catch (e2) {}
     }
@@ -594,28 +622,39 @@ function __uiProto() {
       if (e.indexOf("on") !== 0) e = "on" + e.charAt(0).toUpperCase() + e.slice(1);
       this.__fire(e);
     },
-    addEventListener: function (name, fn) {
-      var k = String(name).toLowerCase();
-      (this.__listeners[k] = this.__listeners[k] || []).push(fn);
+    addEventListener: function (name, fn, capture) {
+      if (typeof fn !== "function") throw new TypeError("event listener must be a function");
+      var k = String(name).toLowerCase(), list = this.__listeners[k] || (this.__listeners[k] = []);
+      if (!list.some(function(l){return l.fn === fn && l.capture === !!capture;})) list.push({fn:fn,capture:!!capture});
     },
-    removeEventListener: function (name, fn) {
+    removeEventListener: function (name, fn, capture) {
       var k = String(name).toLowerCase();
-      if (this.__listeners[k]) this.__listeners[k] = this.__listeners[k].filter(function (f) { return f !== fn; });
+      if (this.__listeners[k]) this.__listeners[k] = this.__listeners[k].filter(function(l){return l.fn !== fn || l.capture !== !!capture;});
     },
-    dispatchEvent: function (e) { this.__fire("on" + String(e.type || e).charAt(0).toUpperCase() + String(e.type || e).slice(1)); },
-    __fire: function (name) {
-      var r;
-      if (typeof this[name] === "function") r = this[name].call(this);
-      var l = this.__listeners[name.slice(2).toLowerCase()];
-      if (l) for (var i = 0; i < l.length; i++) l[i].call(this, { type: name.slice(2).toLowerCase(), target: this });
-      return r;
+    dispatchEvent: function (event) { return __uiDispatchEvent(this,event); },
+    __fire: function (name, nativeCallback, mouse) {
+      var e = __uiEvent(name.slice(2).toLowerCase());
+      if(mouse) ['screenX','screenY','clientX','clientY','shiftKey','ctrlKey','altKey','metaKey'].forEach(function(k){if(mouse[k]!==undefined)e[k]=mouse[k];});
+      e.bubbles = name === "onClick" || name === "onDoubleClick" || name === "onMousedown" || name === "onMouseup";
+      e.cancelable = e.bubbles;
+      if (name === "onDoubleClick") { e.type = "click"; e.detail = 2; }
+      __uiDispatchEvent(this,e,name,nativeCallback);
+      return e.__callbackResult;
     },
     __handlers: function () {
       var out = [];
-      var names = ["onClick", "onChange", "onChanging", "onDoubleClick", "onClose", "onShow", "onActivate", "onDeactivate", "onResize", "onDraw"];
+      var names = ["onMouseover", "onMouseout", "onMousemove", "onMousedown", "onMouseup", "onClick", "onChange", "onChanging", "onDoubleClick", "onClose", "onShow", "onActivate", "onDeactivate", "onResize", "onDraw"];
       for (var i = 0; i < names.length; i++) {
         var n = names[i];
         if (typeof this[n] === "function" || (this.__listeners[n.slice(2).toLowerCase()] || []).length) out.push(n);
+      }
+      // Press/release listeners also make image/text/group controls interactive.
+      // A child participates in its ancestors' capture and bubble listeners.
+      var node=this, seen=[];
+      while(node && seen.length<128 && seen.indexOf(node)<0) {
+        seen.push(node);
+        if(((node.__listeners.click || []).length || (node.__listeners.mousedown || []).length || (node.__listeners.mouseup || []).length || (node.__listeners.mouseover || []).length || (node.__listeners.mouseout || []).length || (node.__listeners.mousemove || []).length) && out.indexOf("onClick")<0)out.push("onClick");
+        node=node.parent;
       }
       return out;
     },
@@ -628,6 +667,7 @@ function __uiProto() {
     "Scrollbar", "Progressbar", "DropDownList", "ListBox", "TabbedPanel", "Tab", "ScriptUIImage"];
   for (var i = 0; i < all.length; i++) {
     var C = __ecGlobal[all[i]];
+    Object.defineProperty(C.prototype, Symbol.toStringTag, {value:all[i], configurable:true});
     var p = __uiProto();
     for (var k in p) C.prototype[k] = p[k];
     Object.defineProperty(C.prototype, "bounds", {
@@ -723,7 +763,7 @@ function __uiJson(c) {
     type: c.type,
     name: String(c.name || c.properties.name || c.__key || ""),
     text: String(c.text === undefined || c.text === null ? "" : c.text),
-    enabled: c.enabled !== false,
+    enabled: __uiEnabled(c),
     visible: c.visible !== false,
     helpTip: String(c.helpTip || ""),
     handlers: c.__handlers(),
@@ -742,7 +782,7 @@ function __uiJson(c) {
     for (var i = 0; i < kids.length; i++) o.children.push(__uiJson(kids[i]));
   }
   if (c.alignment !== null && c.alignment !== undefined) o.alignment = __uiAlign(c.alignment);
-  if (c.type === "checkbox" || c.type === "radiobutton") o.checked = !!c.value;
+  if (c.type === "checkbox" || c.type === "radiobutton" || (c.type === "iconbutton" && c.properties.toggle)) o.checked = !!c.value;
   if (c.type === "slider" || c.type === "scrollbar" || c.type === "progressbar") {
     o.value = Number(c.value) || 0;
     o.min = Number(c.minvalue) || 0;
@@ -750,12 +790,14 @@ function __uiJson(c) {
     if (!(o.max === o.max)) o.max = 100;
   }
   if (c.items) {
-    o.items = c.items.map(function (it) { return String(it.text); });
-    o.selection = c.__sel.slice();
+    if (c.type === "dropdownlist" || c.type === "listbox") {
+      o.items = c.items.map(function (it) { return String(it.text); });
+      o.selection = (c.__sel || []).slice();
+    }
   }
-  if (c.type === "tabbedpanel") o.activeTab = c.__sel.length ? c.__sel[0] : 0;
+  if (c.type === "tabbedpanel") o.activeTab = c.__sel && c.__sel.length ? c.__sel[0] : 0;
   if (c.__draw && typeof c.onDraw === "function") o.draw = c.__draw;
-  if ((c.type === "image" || c.type === "iconbutton") && c.image) o.image = __uiImageJson(c.image);
+  if ((c.type === "image" || c.type === "iconbutton") && c.image) o.image = __uiImageJson(c.image, c);
   if (c.type === "edittext") {
     o.multiline = !!c.__multiline;
     o.readOnly = !!c.__readonly;
@@ -808,6 +850,42 @@ function __uiLayout(win) {
   })(win, 0, 0);
 }
 
+// Original bounded ScriptUI event propagation. Native callback properties run
+// on the target; registered listeners also receive capture/bubble phases.
+function __uiEvent(type) {
+  return {type:String(type),bubbles:false,cancelable:false,defaultPrevented:false,
+    eventPhase:0,target:null,currentTarget:null,detail:1,button:0,screenX:0,screenY:0,clientX:0,clientY:0,
+    shiftKey:false,ctrlKey:false,altKey:false,metaKey:false,timeStamp:Date.now(),
+    stopPropagation:function(){this.__stopped=true;},
+    preventDefault:function(){if(this.cancelable)this.defaultPrevented=true;},
+    initEvent:function(type,bubbles,cancelable){this.type=String(type);this.bubbles=!!bubbles;this.cancelable=!!cancelable;}};
+}
+function __uiDispatchEvent(target,event,callback,nativeCallback) {
+  if(!event || typeof event!=="object")event=__uiEvent(event);
+  var defaults=__uiEvent(event.type);Object.keys(defaults).forEach(function(k){if(event[k]===undefined)event[k]=defaults[k];});
+  var path=[],node=target.parent;
+  while(node) {
+    if(path.length>=128 || path.indexOf(node)>=0 || node===target)throw new RangeError("ScriptUI event ancestry limit exceeded");
+    path.push(node);node=node.parent;
+  }
+  event.target=target;event.__stopped=false;
+  var key=String(event.type).toLowerCase();
+  function invoke(node,capture,phase) {
+    event.currentTarget=node;event.eventPhase=phase;
+    var listeners=(node.__listeners[key]||[]).slice();
+    for(var i=0;i<listeners.length;i++)if(listeners[i].capture===capture)listeners[i].fn.call(node,event);
+  }
+  for(var i=path.length-1;i>=0 && !event.__stopped;i--)invoke(path[i],true,1);
+  if(!event.__stopped) {
+    invoke(target,true,2);invoke(target,false,2);
+    var name=callback || (key==='click' && event.detail===2?'onDoubleClick':'on'+key.charAt(0).toUpperCase()+key.slice(1));
+    if(nativeCallback!==false && !event.defaultPrevented && typeof target[name]==='function')event.__callbackResult=target[name].call(target);
+  }
+  if(event.bubbles)for(var i=0;i<path.length && !event.__stopped;i++)invoke(path[i],false,3);
+  event.currentTarget=null;event.eventPhase=0;
+  return !event.defaultPrevented;
+}
+
 // A user action from the frontend.
 function __uiDispatch(winId, id, kind, valueJson) {
   var w = __uiWin(winId);
@@ -818,14 +896,29 @@ function __uiDispatch(winId, id, kind, valueJson) {
     return;
   }
   var c = __uiFind(w, id);
-  if (!c || c.enabled === false) return;
+  if (!c) return;
+  if (kind === "pointer") {
+    c.__pointer = v || {};
+    var enabled = __uiEnabled(c);
+    if (enabled || v.event === "mouseout" || v.event === "mouseup") {
+      c.__fire("on" + v.event.charAt(0).toUpperCase() + v.event.slice(1), false, v);
+    }
+    return;
+  }
+  if (!__uiEnabled(c)) return;
   var radio = function () {
     var sib = c.parent ? c.parent.children : [];
     for (var i = 0; i < sib.length; i++) if (sib[i] !== c && sib[i].type === "radiobutton") sib[i].value = false;
     c.value = true;
   };
   if (kind === "click") {
-    if (c.type === "checkbox") c.value = !c.value;
+    // A complete activation includes the press/release listeners used by
+    // custom controls. notify('onClick') still invokes only that callback.
+    if (!v || v.pointerSequence !== false) {
+      c.__fire("onMousedown",false,v);
+      c.__fire("onMouseup",false,v);
+    }
+    if (c.type === "checkbox" || (c.type === "iconbutton" && c.properties.toggle)) c.value = !c.value;
     else if (c.type === "radiobutton") radio();
     else if (c.type === "tab" && c.parent) {
       c.parent.selection = c;
@@ -833,7 +926,10 @@ function __uiDispatch(winId, id, kind, valueJson) {
       return;
     }
     var handled = c.__handlers().indexOf("onClick") >= 0;
-    c.__fire("onClick");
+    // Groups often store a custom onClick function and call it from a
+    // registered listener. It is not a native Group callback; invoking both
+    // would apply the action twice when the group's empty area is clicked.
+    c.__fire("onClick",["button","iconbutton","checkbox","radiobutton"].indexOf(c.type)>=0,v);
     // Dialog buttons without handlers: OK closes with 1, Cancel with 2.
     if (!handled && c.type === "button" && w.__kind === "dialog") {
       var n = String(c.name || c.properties.name || c.text).toLowerCase();

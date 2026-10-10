@@ -10,6 +10,9 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+web-time = { workspace = true }
+roxmltree = "0.21"
+effectcraft-jsxbin = { workspace = true }
 effectcraft-engine = { workspace = true }
 effectcraft-project = { workspace = true }
 effectcraft-keyframe = { workspace = true }
@@ -17,7 +20,7 @@ effectcraft-time = { workspace = true }
 effectcraft-render = { workspace = true }
 effectcraft-path = { workspace = true }
 serde_json = { workspace = true }
-boa_engine = { workspace = true }
+boa_engine = { workspace = true, features = ["annex-b"] }
 
 # On the web, boa's clock and Math.random need the browser (getrandom `wasm_js`, web-time).
 [target.'cfg(target_arch = "wasm32")'.dependencies]

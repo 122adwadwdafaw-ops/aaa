@@ -206,9 +206,9 @@ fn yield_wait(outcome: crate::Outcome, windows: Vec<ScriptWindow>, done: bool) -
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn host_main(name: String, code: String, link: Link) {
+fn host_main(name: String, code: String, panel_title: Option<String>, link: Link) {
     let Ok(ToHost::Start(session)) = link.rx.recv() else { return };
-    let mut a = Active::new(session, &name);
+    let mut a = Active::new(session, &name, panel_title.is_some());
     a.link = Some(link);
     ACTIVE.with(|c| *c.borrow_mut() = Some(a));
     let file = if name.is_empty() { "script".to_string() } else { name.clone() };
@@ -220,7 +220,7 @@ fn host_main(name: String, code: String, link: Link) {
                 return;
             }
         };
-        let r = crate::runtime::eval_with_tasks(&mut ctx, &code, &file);
+        let r = crate::runtime::eval_with_tasks(&mut ctx, &code, &file, panel_title.as_deref());
         let mut out = outcome(settle(), r);
         loop {
             let windows = snapshot(&mut ctx);
@@ -271,8 +271,11 @@ pub(crate) fn run_threaded(session: &mut Session, req: &effectcraft_engine::Scri
     let (to_tx, to_rx) = std::sync::mpsc::channel();
     let (from_tx, from_rx) = std::sync::mpsc::channel();
     let (name, code) = (req.name.to_string(), req.code.to_string());
-    let spawned =
-        std::thread::Builder::new().name(format!("script-{host}")).stack_size(64 << 20).spawn(move || host_main(name, code, Link { rx: to_rx, tx: from_tx }));
+    let panel_title = req.panel_title.map(str::to_owned);
+    let spawned = std::thread::Builder::new()
+        .name(format!("script-{host}"))
+        .stack_size(64 << 20)
+        .spawn(move || host_main(name, code, panel_title, Link { rx: to_rx, tx: from_tx }));
     if spawned.is_err() {
         return crate::runtime::run_inline(session, req);
     }
@@ -329,8 +332,9 @@ pub fn dispatch_ui(session: &mut Session, ev: &ScriptUiEvent) -> Result<J, Strin
 }
 
 fn dispatch_inline(session: &mut Session, host: u32, name: &str, ev: &ScriptUiEvent) -> crate::Outcome {
+    let panel = session.script_ui.windows.iter().any(|w| w.host == host && w.kind == effectcraft_engine::scriptui::WindowKind::Panel);
     let s = std::mem::take(session);
-    ACTIVE.with(|a| *a.borrow_mut() = Some(Active::new(s, name)));
+    ACTIVE.with(|a| *a.borrow_mut() = Some(Active::new(s, name, panel)));
     let guard = Restore { target: session };
     let (r, windows) = if host == CONSOLE_HOST {
         CONSOLE.with(|c| match c.borrow_mut().as_mut() {

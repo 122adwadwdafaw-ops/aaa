@@ -98,6 +98,11 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
+    /// Override a scripting special folder (e.g. `userData`, `temp`) for virtual
+    /// hosts and isolated compatibility tests. This does not grant file access.
+    fn script_folder(&self, _name: &str) -> Option<String> {
+        None
+    }
     /// Whether a file exists (the background footage check after open).
     fn exists(&self, path: &str) -> bool {
         std::path::Path::new(path).exists()
@@ -495,6 +500,8 @@ pub type ThumbnailJob = Box<dyn FnOnce() -> Option<(u32, u32, Vec<u8>)> + Send>;
 /// A script to run (see [`Session::script`]).
 #[derive(Clone, Copy, Debug)]
 pub struct ScriptRequest<'a> {
+    /// Docked ScriptUI title. The scripting host binds top-level `this` without wrapping global declarations.
+    pub panel_title: Option<&'a str>,
     pub code: &'a str,
     /// File name shown in errors and `$.fileName` (`console` for the Script Console).
     pub name: &'a str,

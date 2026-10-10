@@ -263,6 +263,10 @@ public specification or permissive data (`.prproj`, `.jsxbin`, Vanishing Point `
 predefined CJK CMaps in PDF import, Kodak film emulations) are not counted against breadth.
 `.aep` / `.aepx` *are* counted: they are the main file format and decide beta.
 
+A proposed partial `.jsxbin` loader now exists under a contributor-authorized MIT-reference
+exception. Its [provenance and limits](../crates/jsxbin/README.md) need maintainer policy
+review; this does not retroactively change the clean-room scope or the estimates above.
+
 ---
 
 ## Appendix: feature-checklist audit history

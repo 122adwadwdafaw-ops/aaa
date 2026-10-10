@@ -51,6 +51,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("interchange", 3),
     ("engine", 4),
     ("script", 4),
+    ("jsxbin", 0),
     ("host", 4),
     ("ui-egui", 5),
     ("automation", 5),

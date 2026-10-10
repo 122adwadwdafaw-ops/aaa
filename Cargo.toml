@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+exclude = ["vendor/boa_engine"]
 members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/*"]
 
@@ -41,6 +42,7 @@ effectcraft-ui-egui = { path = "crates/ui-egui" }
 effectcraft-automation = { path = "crates/automation" }
 effectcraft-opusenc = { path = "crates/opusenc" }
 effectcraft-script = { path = "crates/script" }
+effectcraft-jsxbin = { path = "crates/jsxbin" }
 effectcraft-hevcenc = { path = "crates/hevcenc" }
 effectcraft-av1enc = { path = "crates/av1enc" }
 effectcraft-plugin = { path = "crates/plugin" }
@@ -202,3 +204,7 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Local compatibility hook; see vendor/boa_engine/README-effectcraft.md.
+[patch.crates-io]
+boa_engine = { path = "vendor/boa_engine" }

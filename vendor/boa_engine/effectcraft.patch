@@ -1,0 +1,188 @@
+--- a/src/builtins/eval/mod.rs
++++ b/src/builtins/eval/mod.rs
+@@ -121,6 +121,7 @@
+         //     b. If script is a List of errors, throw a SyntaxError exception.
+         //     c. If script Contains ScriptBody is false, return undefined.
+         //     d. Let body be the ScriptBody of script.
++        let x = context.host_hooks().prepare_script_source(&x, context)?;
+         let x = x.to_vec();
+         let source = Source::from_utf16(&x);
+ 
+@@ -202,6 +203,12 @@
+         }
+ 
+         strict |= body.strict();
++
++        // A host-bound top-level script receiver (docked ScriptUI) must survive
++        // direct eval. Function receivers and indirect eval use standard rules.
++        let inherited_this = (direct && !flags.contains(Flags::IN_FUNCTION)
++            && context.vm.frame().has_this_value_cached())
++            .then(|| context.vm.stack.get_this(context.vm.frame()));
+ 
+         // Because our environment model does not map directly to the spec, this section looks very different.
+         // 12 - 13 are implicit in the call of `Context::compile_with_new_declarative`.
+@@ -334,8 +341,8 @@
+         context.vm.push_frame_with_stack(
+             CallFrame::new(code_block.clone(), None, environments, realm)
+                 .with_env_fp(env_fp)
+-                .with_flags(CallFrameFlags::EXIT_EARLY),
+-            JsValue::undefined(),
++                .with_flags(if inherited_this.is_some() { CallFrameFlags::EXIT_EARLY | CallFrameFlags::THIS_VALUE_CACHED } else { CallFrameFlags::EXIT_EARLY }),
++            inherited_this.unwrap_or_default(),
+             JsValue::null(),
+         );
+ 
+--- a/src/builtins/function/mod.rs
++++ b/src/builtins/function/mod.rs
+@@ -474,6 +474,8 @@
+             context,
+         )?;
+ 
++        let body = context.host_hooks().prepare_script_source(&body, context)?;
++
+         let parameters = if param_list.is_empty() {
+             FormalParameterList::default()
+         } else {
+--- a/src/context/hooks.rs
++++ b/src/context/hooks.rs
+@@ -58,6 +58,17 @@
+ ///
+ /// [`Host Hooks`]: https://tc39.es/ecma262/#sec-host-hooks-summary
+ pub trait HostHooks {
++    /// Host extension: normalize legacy script encodings immediately before eval or
++    /// Function-body parsing. Default preserves standard ECMAScript behavior.
++    /// This runs inside the intrinsic, preserving direct-eval lexical scope.
++    fn prepare_script_source(
++        &self,
++        source: &JsString,
++        _context: &mut Context,
++    ) -> JsResult<JsString> {
++        Ok(source.clone())
++    }
++
+     /// [`HostMakeJobCallback ( callback )`][spec]
+     ///
+     /// # Requirements
+--- a/src/script.rs
++++ b/src/script.rs
+@@ -174,11 +174,21 @@
+     ///
+     /// [`JobExecutor::run_jobs`]: crate::job::JobExecutor::run_jobs
+     pub fn evaluate(&self, context: &mut Context) -> JsResult<JsValue> {
+-        self.prepare_run(context)?;
++        self.prepare_run(context, None)?;
+         let record = context.run();
+ 
+         context.vm.pop_frame();
+ 
++        record.consume()
++    }
++
++    /// Host extension: bind a script's top-level `this` without introducing a
++    /// function scope. Used for docked ScriptUI panels; var declarations remain
++    /// global and ordinary functions retain their normal receiver semantics.
++    pub fn evaluate_with_this(&self, context: &mut Context, this: JsValue) -> JsResult<JsValue> {
++        self.prepare_run(context, Some(this))?;
++        let record = context.run();
++        context.vm.pop_frame();
+         record.consume()
+     }
+ 
+@@ -206,7 +216,7 @@
+         context: &mut Context,
+         budget: u32,
+     ) -> JsResult<JsValue> {
+-        self.prepare_run(context)?;
++        self.prepare_run(context, None)?;
+ 
+         let record = context.run_async_with_budget(budget).await;
+ 
+@@ -215,10 +225,11 @@
+         record.consume()
+     }
+ 
+-    fn prepare_run(&self, context: &mut Context) -> JsResult<()> {
++    fn prepare_run(&self, context: &mut Context, this: Option<JsValue>) -> JsResult<()> {
+         let codeblock = self.codeblock(context)?;
+ 
+         let global_env = EnvironmentStack::new();
++        let flags = if this.is_some() { CallFrameFlags::EXIT_EARLY | CallFrameFlags::THIS_VALUE_CACHED } else { CallFrameFlags::EXIT_EARLY };
+         context.vm.push_frame_with_stack(
+             CallFrame::new(
+                 codeblock.clone(),
+@@ -227,8 +238,8 @@
+                 self.inner.realm.clone(),
+             )
+             .with_env_fp(0)
+-            .with_flags(CallFrameFlags::EXIT_EARLY),
+-            JsValue::undefined(),
++            .with_flags(flags),
++            this.unwrap_or_default(),
+             JsValue::null(),
+         );
+ 
+--- a/src/vm/mod.rs
++++ b/src/vm/mod.rs
+@@ -847,6 +847,12 @@
+             native.stack.0 = ErrorStack::Backtrace(backtrace);
+         }
+ 
++        // Opt-in local diagnostics also expose failures swallowed by panel
++        // frameworks' catch handlers. Formatting does not call JS getters.
++        if std::env::var_os("EFFECTCRAFT_SCRIPT_TRACE_EXCEPTIONS").is_some() {
++            eprintln!("script exception (may be caught): {err}");
++        }
++
+         // Note: -1 because we increment after fetching the opcode.
+         let pc = self.vm.frame().pc.saturating_sub(1);
+         if self.vm.handle_exception_at(pc) {
+--- a/src/vm/opcode/get/property.rs
++++ b/src/vm/opcode/get/property.rs
+@@ -35,7 +35,13 @@
+     //
+     //    To prevent the creation of a temporary JsObject, we directly retrieve the prototype that
+     //    `to_object()` would produce, such as `Number.prototype`, `String.prototype`, etc.
+-    let object = object.base_class(context)?;
++    let object = object.base_class(context).map_err(|_| {
++        let name = context.vm.frame().code_block().ic.get(usize::from(index))
++            .map(|ic| ic.name.to_std_string_escaped()).unwrap_or_default();
++        crate::JsError::from(crate::JsNativeError::typ().with_message(format!(
++            "cannot read property '{name}' of null or undefined"
++        )))
++    })?;
+ 
+     let ic = &context.vm.frame().code_block().ic[usize::from(index)];
+     let object_borrowed = object.borrow();
+@@ -66,6 +72,9 @@
+ 
+     let context = &mut InternalMethodPropertyContext::new(context);
+     let result = object.__get__(&key, receiver.clone(), context)?;
++    if result.is_undefined() && std::env::var_os("EFFECTCRAFT_SCRIPT_TRACE_PROPERTIES").is_some() {
++        eprintln!("undefined property: {key:?}");
++    }
+ 
+     // Cache the property.
+     let slot = *context.slot();
+@@ -91,7 +100,11 @@
+ ) -> JsResult<()> {
+     let key_value = context.vm.get_register(key.into()).clone();
+     let base = context.vm.get_register(object.into()).clone();
+-    let object = base.base_class(context)?;
++    let object = base.base_class(context).map_err(|_| {
++        crate::JsError::from(crate::JsNativeError::typ().with_message(format!(
++            "cannot read property {} of null or undefined", key_value.display()
++        )))
++    })?;
+     let key_value = key_value.to_property_key(context)?;
+ 
+     // Fast Path
+@@ -148,6 +161,9 @@
+         receiver.clone(),
+         &mut InternalMethodPropertyContext::new(context),
+     )?;
++    if result.is_undefined() && std::env::var_os("EFFECTCRAFT_SCRIPT_TRACE_PROPERTIES").is_some() {
++        eprintln!("undefined property: {key_value:?}");
++    }
+ 
+     if PUSH_KEY {
+         context.vm.set_register(key.into(), key_value.into());

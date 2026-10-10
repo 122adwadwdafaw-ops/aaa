@@ -376,7 +376,7 @@ fn script_cmd(args: &Args, json_out: bool) -> Result<(), Failure> {
     let (code, name) = match (args.opt("--eval"), args.pos.first()) {
         (Some(c), _) => (c.to_string(), "eval".to_string()),
         (None, Some(f)) => (std::fs::read_to_string(f).map_err(|e| Failure::Error(format!("cannot read {f}: {e}")))?, f.clone()),
-        (None, None) => return usage_err("script needs a .jsx/.js file or --eval CODE"),
+        (None, None) => return usage_err("script needs a .jsx/.js/.jsxbin file or --eval CODE"),
     };
     let mut b = backend(args, false)?;
     let r = b.exec("script.run", json!({"code": code, "name": name}))?;

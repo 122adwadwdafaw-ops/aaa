@@ -120,3 +120,8 @@ under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt). Forks and 
 | `docs/brand/artcraft-mark.svg` | ArtCraft Team | Original work: first-party ArtCraft brand mark (ArtCraft symbol ("A" mark), blue) | ArtCraft brand terms, not open source (`docs/brand/LICENSE-brand.txt`) |
 
 - Appearance theme previews, drawn procedurally from original shapes: `crates/ui-egui/src/panels/settings.rs` (original work, MIT OR Apache-2.0).
+
+## JSXBIN compatibility code
+
+- `crates/jsxbin`: wire grammar adapted from autoboosh (2015), MIT, pinned [reference](https://github.com/codecopy/jsxbin-to-jsx-converter/tree/a7a225f676f4cb1f9bbe9b737dba5b717fc37145); full notice in `crates/jsxbin/LICENSE-reference-MIT`. Original Rust validation/emission and synthetic fixtures by @cdinhoo under MIT OR Apache-2.0.
+- `vendor/boa_engine`: Boa 0.22.0, MIT OR Unlicense, with the original license files and a documented local source-preparation hook (`README-effectcraft.md`).

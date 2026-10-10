@@ -53,11 +53,13 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![recursion_limit = "256"]
 
+mod legacy;
 pub mod matchnames;
 mod model;
 mod runtime;
 mod socket;
 mod ui;
+mod xml;
 
 use effectcraft_engine::{ScriptRequest, Session};
 
@@ -77,7 +79,7 @@ pub fn install(s: &mut Session) {
 
 /// Run `code` as a one-off script named `name`.
 pub fn run_code(s: &mut Session, code: &str, name: &str) -> Outcome {
-    run(s, &ScriptRequest { code, name, console: false })
+    run(s, &ScriptRequest { panel_title: None, code, name, console: false })
 }
 
 #[cfg(test)]
@@ -90,3 +92,9 @@ mod tests_panels;
 mod tests_ui;
 #[cfg(test)]
 mod tests_ui_more;
+
+#[cfg(test)]
+mod tests_jsxbin;
+
+#[cfg(test)]
+mod tests_compatibility;

@@ -18,10 +18,50 @@ use crate::theme::Tokens;
 
 enum Act {
     Click(u32, u32),
+    Pointer(u32, u32, Value),
     Set(u32, u32, Value),
     /// A live update (each keystroke / slider step): fires onChanging.
     Changing(u32, u32, Value),
     Close(u32),
+}
+
+#[derive(Clone, Default)]
+struct PointerState {
+    hovered: bool,
+    pressed: bool,
+    focused: bool,
+    position: Option<egui::Pos2>,
+    modifiers: egui::Modifiers,
+}
+
+/// Send transitions while the pointer is held, before activation on release.
+fn pointer_actions(ui: &egui::Ui, r: &egui::Response, win: u32, widget: u32, acts: &mut Vec<Act>) {
+    let id = egui::Id::new(("scriptui-pointer", win, widget));
+    let old = ui.data(|d| d.get_temp::<PointerState>(id)).unwrap_or_default();
+    let (position, modifiers, pressed_now, released_now) =
+        ui.input(|i| (i.pointer.latest_pos(), i.modifiers, i.pointer.primary_pressed(), i.pointer.primary_released()));
+    let hovered = r.enabled() && r.hovered();
+    let pressed = r.enabled() && r.is_pointer_button_down_on();
+    let focused = r.enabled() && r.has_focus();
+    let mut emit = |event: &str, down: bool| {
+        acts.push(Act::Pointer(win, widget, json!({"event":event,"hovered":hovered,"pressed":down,"focused":focused})));
+    };
+    if hovered != old.hovered {
+        emit(if hovered { "mouseover" } else { "mouseout" }, pressed);
+    }
+    if !old.pressed && (pressed || (r.clicked() && pressed_now)) {
+        emit("mousedown", true);
+    }
+    if (old.pressed || (r.clicked() && pressed_now)) && !pressed && released_now {
+        emit("mouseup", false);
+    }
+    if focused != old.focused {
+        emit(if focused { "focus" } else { "blur" }, pressed);
+    }
+    if (hovered || pressed) && (position != old.position || modifiers != old.modifiers) {
+        emit("mousemove", pressed);
+    }
+    ui.data_mut(|d| d.insert_temp(id, PointerState { hovered, pressed, focused, position, modifiers }));
 }
 
 fn rect_of(origin: egui::Pos2, b: [f64; 4]) -> Rect {
@@ -47,26 +87,28 @@ fn draw_children(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2
             let tw = (tab.text.chars().count() as f32 * 7.0 + 20.0).max(48.0);
             let hr = Rect::from_min_size(pos2(x, r.min.y), vec2(tw, 22.0));
             let active = i == w.active_tab;
-            let resp = ui.interact(hr, egui::Id::new(("sui-tab", win, tab.id)), Sense::click());
-            ui.painter().rect_filled(
-                hr,
-                3.0,
-                if active {
-                    t.row_selected
-                } else if resp.hovered() {
-                    t.hover
-                } else {
-                    t.field_bg
-                },
-            );
-            ui.painter().text(hr.center(), Align2::CENTER_CENTER, &tab.text, Tokens::ui(12.0), t.text);
+            let resp = ui.add_enabled_ui(tab.enabled, |ui| ui.interact(hr, egui::Id::new(("sui-tab", win, tab.id)), Sense::click())).inner;
+            pointer_actions(ui, &resp, win, tab.id, acts);
+            if resp.hovered() && tab.enabled {
+                ui.painter().rect_filled(hr, 2.0, t.hover);
+            }
+            let text_color = if !tab.enabled {
+                t.text_faint
+            } else if active {
+                t.text
+            } else {
+                t.text_dim
+            };
+            ui.painter().text(hr.center(), Align2::CENTER_CENTER, &tab.text, Tokens::ui(12.0), text_color);
+            if active {
+                ui.painter().line_segment([pos2(hr.min.x + 8.0, hr.max.y - 1.0), pos2(hr.max.x - 8.0, hr.max.y - 1.0)], Stroke::new(1.0, text_color));
+            }
             register(app, win, tab, hr);
             if resp.clicked() && !active && tab.enabled {
                 acts.push(Act::Click(win, tab.id));
             }
             x += tw + 2.0;
         }
-        ui.painter().rect_stroke(Rect::from_min_max(pos2(r.min.x, r.min.y + 22.0), r.max), 3.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
         if let Some(tab) = w.children.get(w.active_tab) {
             draw_children(app, ui, origin, win, tab, acts);
         }
@@ -86,6 +128,17 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
     let tip = |r: egui::Response| if w.help_tip.is_empty() { r } else { r.on_hover_text(&w.help_tip) };
     // onDraw: the script paints the control. Without drawOSControl() its paint replaces the
     // default look (buttons and toggles still respond to clicks); with it, it goes on top.
+    // ScriptUI groups often implement buttons using image/text children. Their
+    // registered click listeners must remain reachable through those children.
+    if (w.handlers.iter().any(|h| h == "onClick" || h == "onDraw") || w.image.is_some())
+        && (w.kind.is_container() || matches!(w.kind, WidgetKind::StaticText | WidgetKind::Image | WidgetKind::Unknown))
+    {
+        let r = ui.add_enabled_ui(w.enabled, |ui| ui.interact(rect, id, Sense::click())).inner;
+        pointer_actions(ui, &r, win, w.id, acts);
+        if r.clicked() {
+            acts.push(Act::Click(win, w.id));
+        }
+    }
     let custom = w.handlers.iter().any(|h| h == "onDraw");
     let os = w.draw.iter().any(|d| matches!(d, DrawOp::Os));
     if custom && !os {
@@ -95,9 +148,16 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
             return;
         }
         let clickable = matches!(w.kind, WidgetKind::Button | WidgetKind::IconButton | WidgetKind::Checkbox | WidgetKind::RadioButton);
-        let r = ui.interact(rect, id, if clickable && w.enabled { Sense::click() } else { Sense::hover() });
+        let r = ui
+            .add_enabled_ui(w.enabled, |ui| {
+                ui.interact(rect, if clickable { id } else { id.with("draw-hover") }, if clickable { Sense::click() } else { Sense::hover() })
+            })
+            .inner;
+        if clickable {
+            pointer_actions(ui, &r, win, w.id, acts);
+        }
         paint_draw(ui, rect, &w.draw, &t, &*services);
-        if tip(r).clicked() && clickable {
+        if tip(r).clicked() && clickable && w.enabled {
             acts.push(Act::Click(win, w.id));
         }
         return;
@@ -119,7 +179,8 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
             draw_children(app, ui, origin, win, w, acts);
         }
         WidgetKind::Button | WidgetKind::IconButton => {
-            let r = ui.add_enabled_ui(w.enabled, |ui| ui.put(rect, egui::Button::new(&w.text))).inner;
+            let r = ui.add_enabled_ui(w.enabled, |ui| ui.put(rect, egui::Button::new(&w.text).selected(w.checked))).inner;
+            pointer_actions(ui, &r, win, w.id, acts);
             if let Some(img) = &w.image {
                 paint_image(ui, rect.shrink(3.0), img, &*services);
             }
@@ -141,6 +202,7 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
             let te = if w.multiline { egui::TextEdit::multiline(&mut buf) } else { egui::TextEdit::singleline(&mut buf) };
             let te = te.id(id).interactive(!w.read_only).font(Tokens::ui(12.0));
             let r = ui.add_enabled_ui(w.enabled, |ui| ui.put(rect, te)).inner;
+            pointer_actions(ui, &r, win, w.id, acts);
             let r = tip(r);
             // Live updates already sent the text: the commit still runs onChange.
             let dirty_id = id.with("dirty");
@@ -158,12 +220,14 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
         WidgetKind::Checkbox => {
             let mut v = w.checked;
             let r = ui.add_enabled_ui(w.enabled, |ui| ui.put(snug(rect, &w.text), egui::Checkbox::new(&mut v, &w.text))).inner;
+            pointer_actions(ui, &r, win, w.id, acts);
             if tip(r).clicked() {
                 acts.push(Act::Click(win, w.id));
             }
         }
         WidgetKind::RadioButton => {
             let r = ui.add_enabled_ui(w.enabled, |ui| ui.put(snug(rect, &w.text), egui::RadioButton::new(w.checked, &w.text))).inner;
+            pointer_actions(ui, &r, win, w.id, acts);
             if tip(r).clicked() && !w.checked {
                 acts.push(Act::Click(win, w.id));
             }
@@ -181,6 +245,7 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
                     .inner
                 })
                 .inner;
+            pointer_actions(ui, &r, win, w.id, acts);
             let r = tip(r);
             if r.dragged() {
                 // Live: each step of the drag reaches the script (onChanging).
@@ -256,7 +321,13 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
 fn paint_draw(ui: &egui::Ui, rect: Rect, ops: &[DrawOp], t: &Tokens, services: &dyn Services) {
     let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     let col = |c: &Option<[f32; 4]>, theme: Color32| match c {
-        Some(c) => egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]).into(),
+        // ScriptUI brush/pen channels are display sRGB values, not linear-light colors.
+        Some(c) => Color32::from_rgba_unmultiplied(
+            (c[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (c[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (c[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (c[3].clamp(0.0, 1.0) * 255.0).round() as u8,
+        ),
         None => theme,
     };
     let at = |x: f64, y: f64| rect.min + vec2(x as f32, y as f32);
@@ -297,7 +368,12 @@ fn paint_draw(ui: &egui::Ui, rect: Rect, ops: &[DrawOp], t: &Tokens, services: &
                 let r = Rect::from_min_size(at(*x, *y), size);
                 match tex {
                     Some(tx) => {
-                        p.image(tx.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                        p.image(
+                            tx.id(),
+                            r,
+                            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                            if image.as_ref().is_some_and(|i| i.dimmed) { Color32::from_white_alpha(100) } else { Color32::WHITE },
+                        );
                     }
                     None => {
                         p.rect_stroke(r, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
@@ -312,7 +388,7 @@ fn paint_draw(ui: &egui::Ui, rect: Rect, ops: &[DrawOp], t: &Tokens, services: &
 /// A ScriptUIImage as a texture (decoded once and kept; `None` when it can't be read or
 /// decoded).
 fn image_texture(ctx: &egui::Context, img: &ImageRef, services: &dyn Services) -> Option<egui::TextureHandle> {
-    let id = egui::Id::new(("scriptui-image", img));
+    let id = egui::Id::new(("scriptui-image", &img.src, &img.data, &img.name));
     if let Some(cached) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(id)) {
         return cached;
     }
@@ -331,7 +407,12 @@ fn paint_image(ui: &egui::Ui, r: Rect, img: &ImageRef, services: &dyn Services) 
     let s = tex.size_vec2();
     let k = (r.width() / s.x.max(1.0)).min(r.height() / s.y.max(1.0)).min(1.0);
     let dst = Rect::from_center_size(r.center(), s * k);
-    ui.painter().with_clip_rect(r.intersect(ui.clip_rect())).image(tex.id(), dst, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    ui.painter().with_clip_rect(r.intersect(ui.clip_rect())).image(
+        tex.id(),
+        dst,
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+        if img.dimmed { Color32::from_white_alpha(100) } else { Color32::WHITE },
+    );
     true
 }
 
@@ -341,10 +422,29 @@ fn snug(r: Rect, text: &str) -> Rect {
     Rect::from_min_size(r.min, vec2(w, r.height()))
 }
 
+fn mouse_for(app: &EffectcraftApp, ctx: &egui::Context, w: u32, id: u32) -> Value {
+    let origin = app.auto.find(&format!("scriptui.{w}.{id}")).map(|e| pos2(e.rect[0], e.rect[1])).unwrap_or_default();
+    ctx.input(|i| {
+        let point = i.pointer.latest_pos().unwrap_or(origin);
+        let screen = point + i.viewport().inner_rect.map(|r| r.min.to_vec2()).unwrap_or_default();
+        json!({"screenX":screen.x,"screenY":screen.y,"clientX":point.x-origin.x,"clientY":point.y-origin.y,
+            "shiftKey":i.modifiers.shift,"ctrlKey":i.modifiers.ctrl,"altKey":i.modifiers.alt,"metaKey":i.modifiers.mac_cmd})
+    })
+}
+
 fn perform(app: &mut EffectcraftApp, ctx: &egui::Context, acts: Vec<Act>) {
+    if !acts.is_empty() {
+        ctx.request_repaint();
+    }
     for a in acts {
         let (cmd, p) = match a {
-            Act::Click(w, id) => ("scriptui.click", json!({"window": w, "widget": id})),
+            Act::Click(w, id) => ("scriptui.click", json!({"window":w,"widget":id,"mouse":mouse_for(app,ctx,w,id),"pointerSequence":false})),
+            Act::Pointer(w, id, mut state) => {
+                state["window"] = json!(w);
+                state["widget"] = json!(id);
+                state["mouse"] = mouse_for(app, ctx, w, id);
+                ("scriptui.pointer", state)
+            }
             Act::Set(w, id, v) => ("scriptui.set", json!({"window": w, "widget": id, "value": v})),
             Act::Changing(w, id, v) => ("scriptui.set", json!({"window": w, "widget": id, "value": v, "changing": true})),
             Act::Close(w) => ("scriptui.close", json!({"window": w})),

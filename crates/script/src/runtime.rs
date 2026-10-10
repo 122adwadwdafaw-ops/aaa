@@ -69,18 +69,38 @@ pub(crate) struct Active {
     pub(crate) tasks: Vec<(u32, String, bool)>,
     pub(crate) next_task: u32,
     pub(crate) name: String,
+    pub(crate) file_name: String,
     /// Running on a script-host thread: modal dialogs hand the session back to the caller
     /// through this link while they wait.
     pub(crate) link: Option<crate::ui::Link>,
 }
 
 impl Active {
-    pub(crate) fn new(session: Session, name: &str) -> Active {
-        Active { session, output: vec![], groups: vec![], tasks: vec![], next_task: 0, name: name.to_string(), link: None }
+    pub(crate) fn new(session: Session, name: &str, panel: bool) -> Active {
+        // Keep the panel identity for restoration, but expose its installed path
+        // to scripts that load resources relative to $.fileName.
+        let installed = session.config.as_ref().and_then(|cfg| cfg.dir()).and_then(|dir| {
+            if name.is_empty() || name.contains(['/', '\\', '\0']) || name == "." || name == ".." {
+                return None;
+            }
+            let path = dir.join(if panel { "Scripts/ScriptUI Panels" } else { "Scripts" }).join(name);
+            path.is_file().then(|| path.to_string_lossy().to_string())
+        });
+        Active {
+            session,
+            output: vec![],
+            groups: vec![],
+            tasks: vec![],
+            next_task: 0,
+            name: name.to_string(),
+            file_name: installed.unwrap_or_else(|| name.to_string()),
+            link: None,
+        }
     }
 }
 
 thread_local! {
+    static HIRES_TIMER: RefCell<web_time::Instant> = RefCell::new(web_time::Instant::now());
     pub(crate) static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) };
     /// The Script Console's persistent context (never dropped, like the expression runtime: boa's
     /// own thread-local heap may be torn down first at thread exit).
@@ -207,16 +227,63 @@ fn native_query(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<Js
         "app" => Ok(json!({
             "version": format!("26.0 (EffectCraft {})", env!("CARGO_PKG_VERSION")),
             "buildName": env!("CARGO_PKG_VERSION"),
-            "scriptName": act.name,
+            "scriptName": act.file_name,
             "allowFiles": act.session.prefs.scripting.allow_scripts_write_files,
             "projectDir": project_dir(&act.session),
+            "platform": if cfg!(target_os = "macos") { "Mac" } else if cfg!(target_os = "windows") { "Win" } else { "Unix" },
+            "os": std::env::consts::OS,
         })),
+        "hiresTimer" => Ok(HIRES_TIMER.with(|timer| {
+            let now = web_time::Instant::now();
+            let elapsed = now.saturating_duration_since(*timer.borrow()).as_secs_f64() * 1_000_000.0;
+            *timer.borrow_mut() = now;
+            json!(elapsed)
+        })),
+        "scriptFolder" => Ok(script_folder(&act.session, a.get("name").and_then(J::as_str).unwrap_or(""))),
+        "traceMissingApi" => {
+            if std::env::var_os("EFFECTCRAFT_SCRIPT_TRACE").is_some()
+                && let Some(name) = a.get("name").and_then(J::as_str).filter(|s| s.len() < 512)
+            {
+                eprintln!("missing host member: {name}");
+            }
+            Ok(J::Null)
+        }
         _ => crate::model::query(&mut act.session, &kind, &a),
     });
     match r {
         Ok(v) => Ok(js_str(&v.to_string())),
         Err(e) => Err(throw(e)),
     }
+}
+
+fn script_folder(s: &Session, name: &str) -> J {
+    use std::path::PathBuf;
+    if let Some(path) = s.services.script_folder(name) {
+        return json!(path);
+    }
+    let home = std::env::var_os(if cfg!(target_os = "windows") { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    let path = match name {
+        "home" => home.clone(),
+        "temp" => Some(std::env::temp_dir()),
+        "current" => project_dir(s).map(PathBuf::from).or_else(|| std::env::current_dir().ok()),
+        "desktop" => home.as_ref().map(|p| p.join("Desktop")),
+        "myDocuments" => home.as_ref().map(|p| p.join("Documents")),
+        "userData" if cfg!(target_os = "macos") => home.as_ref().map(|p| p.join("Library/Application Support")),
+        "userData" if cfg!(target_os = "windows") => std::env::var_os("APPDATA").map(PathBuf::from),
+        "userData" => std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| home.as_ref().map(|p| p.join(".local/share"))),
+        "appData" if cfg!(target_os = "macos") => Some(PathBuf::from("/Library/Application Support")),
+        "appData" if cfg!(target_os = "windows") => std::env::var_os("PROGRAMDATA").map(PathBuf::from),
+        "appData" => Some(PathBuf::from("/usr/share")),
+        "commonFiles" if cfg!(target_os = "macos") => Some(PathBuf::from("/Library/Application Support")),
+        "commonFiles" if cfg!(target_os = "windows") => std::env::var_os("CommonProgramFiles").map(PathBuf::from),
+        "commonFiles" => Some(PathBuf::from("/usr/share")),
+        "startup" => std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)),
+        "appPackage" => std::env::current_exe()
+            .ok()
+            .and_then(|p| p.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(PathBuf::from).or_else(|| p.parent().map(PathBuf::from))),
+        _ => None,
+    };
+    path.map(|p| json!(p.to_string_lossy())).unwrap_or(J::Null)
 }
 
 /// `__print(text)`: `writeLn`, `$.writeln`, `alert`.
@@ -352,22 +419,39 @@ fn native_file(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsV
         }
         let s = &a.session;
         match op.as_str() {
+            "resolve" => {
+                let home = script_folder(s, "home");
+                let path = if path == "~" || path.starts_with("~/") {
+                    let home = home.as_str().ok_or("the home folder is unavailable")?;
+                    std::path::Path::new(home).join(path.strip_prefix("~/").unwrap_or("")).to_string_lossy().to_string()
+                } else {
+                    path.clone()
+                };
+                let p = std::path::Path::new(&path);
+                Ok(json!(normalize(&if p.is_absolute() { path } else { std::path::Path::new(&data).join(p).to_string_lossy().to_string() }).to_string_lossy()))
+            }
             "access" => Ok(json!(check_access(s, &path, false)?.exists())),
             "exists" | "isDir" => {
                 // Unreadable locations report "missing" instead of failing.
                 let Ok(p) = check_access(s, &path, false) else { return Ok(json!(false)) };
                 Ok(json!(if op == "exists" { p.exists() } else { p.is_dir() }))
             }
-            "read" => {
+            "read" | "readBinary" => {
                 let p = check_access(s, &path, false)?;
                 let bytes = s.services.read_file(&p.to_string_lossy()).map_err(|e| format!("Unable to read {path}: {e}"))?;
-                Ok(json!(String::from_utf8_lossy(&bytes)))
+                Ok(if op == "readBinary" { json!(bytes.into_iter().map(char::from).collect::<String>()) } else { json!(String::from_utf8_lossy(&bytes)) })
             }
-            "write" | "append" => {
+            "write" | "writeBinary" | "append" => {
                 let p = check_access(s, &path, true)?;
                 let ps = p.to_string_lossy().to_string();
                 let mut bytes = if op == "append" { s.services.read_file(&ps).unwrap_or_default() } else { vec![] };
-                bytes.extend_from_slice(data.as_bytes());
+                if op == "writeBinary" {
+                    for c in data.chars() {
+                        bytes.push(u8::try_from(u32::from(c)).map_err(|_| "BINARY files require byte-valued characters")?);
+                    }
+                } else {
+                    bytes.extend_from_slice(data.as_bytes());
+                }
                 s.services.write_file(&ps, &bytes).map_err(|e| format!("Unable to write {path}: {e}"))?;
                 Ok(json!(bytes.len()))
             }
@@ -405,18 +489,74 @@ fn native_file(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsV
     }
 }
 
+struct ScriptHooks;
+impl boa_engine::context::HostHooks for ScriptHooks {
+    fn prepare_script_source(&self, source: &JsString, _ctx: &mut Context) -> JsResult<JsString> {
+        // Do not round-trip ordinary JS through lossy UTF-16 conversion.
+        let text = source.to_std_string_escaped();
+        let decoded = prepare_source(&text, "").map_err(|e| JsNativeError::syntax().with_message(e))?;
+        check_nesting(&decoded).map_err(|e| JsNativeError::syntax().with_message(e))?;
+        if matches!(decoded, std::borrow::Cow::Owned(_)) { Ok(JsString::from(decoded.as_ref())) } else { Ok(source.clone()) }
+    }
+}
+
+thread_local! { static FILE_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; }
+
+fn native_eval_file(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let path = arg_string(args, 0, ctx)?;
+    if FILE_STACK.with(|s| s.borrow().len()) >= 32 {
+        return Err(throw("$.evalFile nesting limit exceeded"));
+    }
+    let (code, file, previous) = with_active(|a| {
+        let requested = std::path::Path::new(&path);
+        let resolved = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            std::path::Path::new(&a.file_name).parent().unwrap_or(std::path::Path::new(".")).join(requested)
+        };
+        let file = check_access(&a.session, &resolved.to_string_lossy(), false)?;
+        let bytes = a.session.services.read_file(&file.to_string_lossy()).map_err(|e| format!("Unable to read {path}: {e}"))?;
+        if bytes.len() > effectcraft_jsxbin::Limits::default().input_bytes {
+            return Err("$.evalFile input size limit exceeded".into());
+        }
+        let code = String::from_utf8(bytes).map_err(|_| "$.evalFile expects UTF-8 source or ASCII JSXBIN".to_string())?;
+        let file = file.to_string_lossy().to_string();
+        let previous = std::mem::replace(&mut a.file_name, file.clone());
+        Ok((code, file, previous))
+    })
+    .map_err(throw)?;
+    FILE_STACK.with(|s| s.borrow_mut().push(file.clone()));
+    let result = (|| {
+        let code = prepare_source(&code, &file).map_err(throw)?;
+        check_nesting(&code).map_err(throw)?;
+        ctx.eval(Source::from_bytes(code.as_bytes()).with_path(std::path::Path::new(&file)))
+    })();
+    FILE_STACK.with(|s| {
+        s.borrow_mut().pop();
+    });
+    with_active(|a| {
+        a.file_name = previous;
+        Ok(())
+    })
+    .map_err(throw)?;
+    result
+}
+
 pub(crate) fn new_context() -> Result<Context, String> {
-    let mut ctx = Context::default();
+    HIRES_TIMER.with(|_| {});
+    let mut ctx = Context::builder().host_hooks(std::rc::Rc::new(ScriptHooks)).build().map_err(|e| e.to_string())?;
     let limits = ctx.runtime_limits_mut();
     limits.set_loop_iteration_limit(200_000_000);
     limits.set_recursion_limit(2000);
-    let natives: [(JsString, usize, fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>); 10] = [
+    let natives: [(JsString, usize, fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>); 12] = [
         (js_string!("__exec"), 2, native_exec),
         (js_string!("__query"), 2, native_query),
         (js_string!("__print"), 1, native_print),
         (js_string!("__undo"), 2, native_undo),
         (js_string!("__task"), 3, native_task),
         (js_string!("__file"), 3, native_file),
+        (js_string!("__evalFile"), 1, native_eval_file),
+        (js_string!("__xmlParse"), 2, crate::xml::parse),
         (js_string!("__sock"), 3, crate::socket::native_sock),
         (js_string!("__uiNewId"), 0, crate::ui::native_new_id),
         (js_string!("__uiModal"), 1, crate::ui::native_modal),
@@ -425,8 +565,18 @@ pub(crate) fn new_context() -> Result<Context, String> {
     for (name, len, f) in natives {
         ctx.register_global_callable(name, len, NativeFunction::from_fn_ptr(f)).map_err(|e| e.to_string())?;
     }
+    ctx.eval(Source::from_bytes(crate::xml::PRELUDE)).map_err(|e| format!("XML prelude: {e}"))?;
     ctx.eval(Source::from_bytes(PRELUDE)).map_err(|e| format!("script prelude: {e}"))?;
+    ctx.eval(Source::from_bytes(include_str!("compat.js"))).map_err(|e| format!("compatibility prelude: {e}"))?;
     ctx.eval(Source::from_bytes(crate::ui::SCRIPTUI)).map_err(|e| format!("ScriptUI prelude: {e}"))?;
+    if std::env::var_os("EFFECTCRAFT_SCRIPT_TRACE").is_some() {
+        ctx.eval(Source::from_bytes(r#"(function(){
+          var seen={}; function trace(object,name){return new Proxy(object,{get:function(target,key,receiver){
+            var value=Reflect.get(target,key,receiver); if(value===undefined && typeof key==='string' && !seen[name+'.'+key]) {seen[name+'.'+key]=true;__get('traceMissingApi',{name:name+'.'+key});} return value;
+          }});}
+          app=trace(app,'app');$=trace($,'$');ScriptUI=trace(ScriptUI,'ScriptUI');
+        })();"#)).map_err(|e|e.to_string())?;
+    }
     Ok(ctx)
 }
 
@@ -434,6 +584,9 @@ pub(crate) fn new_context() -> Result<Context, String> {
 pub(crate) fn script_error(e: &boa_engine::JsError, ctx: &mut Context, file: &str, code: &str) -> ScriptError {
     // Thrown values: `throw new Error("x")`, `throw "x"`, native errors.
     let display = e.to_string();
+    if std::env::var_os("EFFECTCRAFT_SCRIPT_TRACE").is_some() {
+        eprintln!("{display}");
+    }
     let message = match e.as_opaque() {
         Some(v) => {
             let o = v.as_object();
@@ -502,11 +655,36 @@ fn position(msg: &str, file: &str, code: &str) -> (Option<u32>, Option<u32>) {
     (None, None)
 }
 
+/// Shared preparation for file, command, console and compiled ScriptUI inputs.
+fn prepare_source<'a>(code: &'a str, _file: &str) -> Result<std::borrow::Cow<'a, str>, String> {
+    if effectcraft_jsxbin::is_jsxbin(code) {
+        effectcraft_jsxbin::decode(code).map(|d| std::borrow::Cow::Owned(d.source)).map_err(|e| e.to_string())
+    } else {
+        Ok(crate::legacy::source(code))
+    }
+}
+
 /// Evaluate `code` in `ctx` and convert the result.
 pub(crate) fn eval_in(ctx: &mut Context, code: &str, file: &str) -> Result<J, ScriptError> {
+    eval_as_panel(ctx, code, file, None)
+}
+
+fn eval_as_panel(ctx: &mut Context, code: &str, file: &str, panel_title: Option<&str>) -> Result<J, ScriptError> {
+    let decoded = prepare_source(code, "").map_err(|message| ScriptError { message, file: file.into(), ..Default::default() })?;
+    let code = decoded.as_ref();
+    check_nesting(code).map_err(|message| ScriptError { message, file: file.into(), ..Default::default() })?;
     let src = Source::from_bytes(code.as_bytes()).with_path(std::path::Path::new(file));
     let script = boa_engine::Script::parse(src, None, ctx).map_err(|e| script_error(&e, ctx, file, code))?;
-    let v = script.evaluate(ctx).map_err(|e| script_error(&e, ctx, file, code))?;
+    let result = if let Some(title) = panel_title {
+        let make = ctx.global_object().get(js_string!("__uiDockPanel"), ctx).map_err(|e| script_error(&e, ctx, file, code))?;
+        let make =
+            make.as_callable().ok_or_else(|| ScriptError { message: "ScriptUI panel host is unavailable".into(), file: file.into(), ..Default::default() })?;
+        let panel = make.call(&JsValue::undefined(), &[js_str(title)], ctx).map_err(|e| script_error(&e, ctx, file, code))?;
+        script.evaluate_with_this(ctx, panel)
+    } else {
+        script.evaluate(ctx)
+    };
+    let v = result.map_err(|e| script_error(&e, ctx, file, code))?;
     Ok(result_json(&v, ctx))
 }
 
@@ -554,8 +732,8 @@ pub(crate) fn settle() -> Vec<String> {
 }
 
 /// Evaluate a script file's code, then the one-shot tasks it scheduled (`app.scheduleTask`).
-pub(crate) fn eval_with_tasks(ctx: &mut Context, code: &str, file: &str) -> Result<J, ScriptError> {
-    let mut r = eval_in(ctx, code, file);
+pub(crate) fn eval_with_tasks(ctx: &mut Context, code: &str, file: &str, panel_title: Option<&str>) -> Result<J, ScriptError> {
+    let mut r = eval_as_panel(ctx, code, file, panel_title);
     let tasks = with_active(|a| Ok(std::mem::take(&mut a.tasks))).unwrap_or_default();
     for (_, code, repeat) in tasks {
         if repeat {
@@ -588,6 +766,11 @@ pub(crate) fn outcome(output: Vec<String>, result: Result<J, ScriptError>) -> Ou
 /// alive for their handlers. The Script Console (and the web build) run inline, where dialogs
 /// don't block.
 pub fn run(session: &mut Session, req: &ScriptRequest) -> Outcome {
+    let prepared = match prepare_source(req.code, req.name) {
+        Ok(s) => s,
+        Err(message) => return Outcome { error: Some(ScriptError { message, file: req.name.into(), ..Default::default() }), ..Default::default() },
+    };
+    let req = &ScriptRequest { code: prepared.as_ref(), ..*req };
     if let Err(message) = check_nesting(req.code) {
         return Outcome { error: Some(ScriptError { message, file: req.name.into(), ..Default::default() }), ..Default::default() };
     }
@@ -660,7 +843,7 @@ pub fn check_nesting(code: &str) -> Result<(), String> {
 pub(crate) fn run_inline(session: &mut Session, req: &ScriptRequest) -> Outcome {
     let host = if req.console { crate::ui::CONSOLE_HOST } else { crate::ui::new_host_id() };
     let s = std::mem::take(session);
-    ACTIVE.with(|a| *a.borrow_mut() = Some(Active::new(s, req.name)));
+    ACTIVE.with(|a| *a.borrow_mut() = Some(Active::new(s, req.name, req.panel_title.is_some())));
     let guard = Restore { target: session };
     let file = if req.name.is_empty() { "script" } else { req.name };
     let (result, windows) = if req.console {
@@ -675,13 +858,13 @@ pub(crate) fn run_inline(session: &mut Session, req: &ScriptRequest) -> Outcome 
             let Some(ctx) = c.as_mut().map(|m| &mut **m) else {
                 return (Err(ScriptError { message: "the console context is unavailable".into(), file: file.into(), ..Default::default() }), vec![]);
             };
-            let r = eval_in(ctx, req.code, file);
+            let r = eval_as_panel(ctx, req.code, file, req.panel_title);
             (r, crate::ui::snapshot(ctx))
         })
     } else {
         match new_context() {
             Ok(mut ctx) => {
-                let r = eval_with_tasks(&mut ctx, req.code, file);
+                let r = eval_with_tasks(&mut ctx, req.code, file, req.panel_title);
                 let windows = crate::ui::snapshot(&mut ctx);
                 if windows.iter().any(|w| w.visible) {
                     // Palettes and panels outlive the run: keep their context for the handlers.
@@ -707,13 +890,13 @@ mod nesting_tests {
         // 100 000 nested brackets overflowed the parser's stack and aborted the process.
         let mut s = Session::default();
         for code in ["(".repeat(100_000) + "1" + &")".repeat(100_000), "[".repeat(100_000), "{".repeat(MAX_NESTING + 1)] {
-            let out = run(&mut s, &ScriptRequest { code: &code, name: "deep", console: true });
+            let out = run(&mut s, &ScriptRequest { panel_title: None, code: &code, name: "deep", console: true });
             assert!(out.error.is_some_and(|e| e.message.contains("nested too deeply")));
         }
         // Brackets in strings and comments don't count; ordinary nesting runs.
         let quoted = format!("var s = '{}'; // {}\n/* {} */ 1 + 1", "(".repeat(500), "[".repeat(500), "{".repeat(500));
         assert!(check_nesting(&quoted).is_ok());
-        let out = run(&mut s, &ScriptRequest { code: &quoted, name: "ok", console: true });
+        let out = run(&mut s, &ScriptRequest { panel_title: None, code: &quoted, name: "ok", console: true });
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result, serde_json::json!(2));
         assert!(check_nesting(&("(".repeat(MAX_NESTING) + &")".repeat(MAX_NESTING))).is_ok());

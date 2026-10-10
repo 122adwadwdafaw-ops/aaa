@@ -141,3 +141,24 @@ including outside the layer's `[in, out)` range. Timing metadata carries outside
 `keys.set` and `prop.get.keys[]` report both bases and warnings without an explicit base too.
 `prop.get.time` is comp seconds. For these commands, `path` or `prop` identifies a property, not a group.
 Set a layer's offset with `layer.timing {layer, start}` (comp seconds).
+
+### ScriptUI pointer state
+
+`engine.execute` with command `scriptui.click` accepts an optional `mouse` object
+with finite `screenX`, `screenY`, `clientX`, `clientY` coordinates and boolean
+`shiftKey`, `ctrlKey`, `altKey`, `metaKey` modifiers. The native frontend supplies
+these when activating controls. Coordinates default to zero for headless calls;
+client coordinates are relative to the target control. The activation dispatches
+`mousedown`, `mouseup`, and `click` listeners in order. Live transitions use
+`scriptui.pointer` instead of repeating activation.
+
+`scriptui.pointer` supplies live control state independently of activation: `{window?, widget,
+event: mouseover|mouseout|mousedown|mouseup|mousemove|focus|blur, hovered, pressed, focused,
+mouse?}`. The state fields are booleans; `mouse` uses the coordinates/modifiers above. The
+frontend sends transitions during hover and held primary-button presses, then uses
+`scriptui.click {pointerSequence:false}` on activation to avoid duplicate press/release
+listeners. Ordinary agent clicks still synthesize a complete activation by default.
+Custom `onDraw` receives the corresponding DrawState; `ScriptUI.newImage(normal, disabled,
+pressed, rollover)` and `graphics.drawImage` choose the matching state image. Disabled
+containers disable their descendants. Right/middle-button state and lock-key state are
+not yet modeled.

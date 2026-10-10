@@ -47,8 +47,12 @@ pub fn query(s: &mut Session, kind: &str, a: &J) -> R {
         "resolveAdd" => resolve_add(s, a),
         "menuCommandId" => Ok(menu_command_id(a.get("name").and_then(J::as_str).unwrap_or(""))),
         "commandAt" => {
-            let i = u(a, "index").unwrap_or(0) as usize;
-            Ok(effectcraft_engine::command_specs().get(i.wrapping_sub(1)).map(|c| json!(c.id)).unwrap_or(J::Null))
+            let id = u(a, "index").unwrap_or(0);
+            if let Some((_, command, page)) = AE_COMMANDS.iter().find(|(n, _, _)| *n == id) {
+                return Ok(json!({"command":command,"params":page.map(|p| json!({"page":p})).unwrap_or(json!({}))}));
+            }
+            let i = id.checked_sub(NATIVE_COMMAND_BASE).and_then(|i| usize::try_from(i).ok());
+            Ok(i.and_then(|i| effectcraft_engine::command_specs().get(i)).map(|c| json!({"command":c.id,"params":{}})).unwrap_or(J::Null))
         }
         "exprError" => {
             let code = a.get("code").and_then(J::as_str).unwrap_or("");
@@ -75,6 +79,7 @@ fn project(s: &Session) -> J {
     json!({
         "items": items,
         "active": active,
+        "activeComp": s.active_comp_id().map(|c|c.0),
         "selection": s.state.project_selection.iter().map(|i| i.0).collect::<Vec<_>>(),
         "path": s.path,
         "dirty": s.is_dirty(),
@@ -689,16 +694,47 @@ fn text_animator_property(name: &str) -> Option<&'static str> {
     AE.iter().map(|(_, k)| *k).find(|k| loose(k) == n || (n == "anchorpoint" && *k == "anchor") || (n == "trackingamount" && *k == "tracking"))
 }
 
-/// `app.findMenuCommandId(name)`: 1-based index of the command whose label matches (menu items
-/// first), 0 when none does.
+// Public AE command identities (Hyperbrew's AE 2025 command reference). Only
+// commands with an implemented equivalent are mapped. Native-only IDs occupy a
+// separate range so an unknown AE number can never execute an unrelated command.
+const NATIVE_COMMAND_BASE: u64 = 1_000_000;
+const AE_COMMANDS: &[(u64, &str, Option<&str>)] = &[
+    (2, "file.newProject", None),
+    (16, "edit.undo", None),
+    (18, "edit.cut", None),
+    (19, "edit.copy", None),
+    (20, "edit.paste", None),
+    (21, "edit.clear", None),
+    (23, "edit.selectAll", None),
+    (2035, "edit.redo", None),
+    (2080, "edit.duplicate", None),
+    (2079, "prefs.open", Some("general")),
+    (2359, "prefs.open", Some("general")),
+    (3131, "prefs.open", Some("scripting")),
+];
+
+/// Known AE identities, otherwise a native-only ID; 0 when no label matches.
 fn menu_command_id(name: &str) -> J {
     let norm = |s: &str| s.trim().trim_end_matches("...").trim_end_matches('…').trim().to_ascii_lowercase();
     let n = norm(name);
+    if n == "scripting & expressions" {
+        return json!(3131);
+    }
+    if n == "general" || n == "preferences" {
+        return json!(2359);
+    }
     let specs = effectcraft_engine::command_specs();
     let pick = specs
         .iter()
         .position(|c| !c.menu.is_empty() && norm(c.label) == n)
         .or_else(|| specs.iter().position(|c| norm(c.label) == n))
         .or_else(|| specs.iter().position(|c| c.id == name));
-    json!(pick.map(|i| i + 1).unwrap_or(0))
+    json!(
+        pick.map(|i| AE_COMMANDS
+            .iter()
+            .find(|(_, id, page)| *id == specs[i].id && page.is_none())
+            .map(|(n, _, _)| *n)
+            .unwrap_or(NATIVE_COMMAND_BASE + i as u64))
+            .unwrap_or(0)
+    )
 }

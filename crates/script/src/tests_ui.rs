@@ -193,6 +193,7 @@ fn layout_and_handler_errors() {
 fn console_windows_run_inline() {
     let mut s = session();
     let req = effectcraft_engine::ScriptRequest {
+        panel_title: None,
         code: "var cw = new Window('palette', 'Console UI'); var cb = cw.add('button', undefined, 'Hi'); var hits = 0; cb.onClick = function () { hits++; writeLn('hit ' + hits); }; cw.show(); 1",
         name: "Script Console",
         console: true,
@@ -203,12 +204,17 @@ fn console_windows_run_inline() {
     let r = s.execute("scriptui.click", json!({"widget": "Hi"})).unwrap();
     assert_eq!(r["output"], "hit 1");
     // The console context sees the handler's state.
-    let o = crate::run(&mut s, &effectcraft_engine::ScriptRequest { code: "hits", name: "Script Console", console: true });
+    let o = crate::run(&mut s, &effectcraft_engine::ScriptRequest { panel_title: None, code: "hits", name: "Script Console", console: true });
     assert_eq!(o.result, json!(1));
     // Dialogs don't block in the console.
     let o = crate::run(
         &mut s,
-        &effectcraft_engine::ScriptRequest { code: "var dd = new Window('dialog', 'D'); dd.show(); 'went on'", name: "Script Console", console: true },
+        &effectcraft_engine::ScriptRequest {
+            panel_title: None,
+            code: "var dd = new Window('dialog', 'D'); dd.show(); 'went on'",
+            name: "Script Console",
+            console: true,
+        },
     );
     assert_eq!(o.result, json!("went on"));
     assert_eq!(s.script_ui.windows.len(), 2);

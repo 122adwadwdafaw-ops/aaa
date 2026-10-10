@@ -1,0 +1,3 @@
+vendor/boa_engine/** linguist-vendored
+vendor/boa_engine/effectcraft.patch -whitespace linguist-vendored=false
+vendor/boa_engine/README-effectcraft.md linguist-vendored=false

@@ -1,0 +1,10 @@
+[package]
+name = "effectcraft-jsxbin"
+description = "Bounded JSXBIN input parsing for EffectCraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

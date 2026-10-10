@@ -24,6 +24,7 @@ function __num(v, what) {
 function __str(v) {
   if (v === undefined || v === null) return "";
   if (v instanceof File || v instanceof Folder) return v.fsName;
+  if (typeof $ !== "undefined" && $.localize && typeof v === "object") v = localize(v);
   return String(v);
 }
 
@@ -69,6 +70,9 @@ var CloseOptions = __enum("CloseOptions", ["DO_NOT_SAVE_CHANGES", "PROMPT_TO_SAV
 var ImportAsType = __enum("ImportAsType", ["COMP_CROPPED_LAYERS", "FOOTAGE", "COMP", "PROJECT"], 3812);
 var TimeDisplayType = __enum("TimeDisplayType", ["FRAMES", "TIMECODE"], 2012);
 var LogType = __enum("LogType", ["ERRORS_ONLY", "ERRORS_AND_SETTINGS", "ERRORS_AND_PER_FRAME_INFO"], 3212);
+// Legacy language identities; app.isoLanguage is the preferred locale API.
+var ViewerType = __enum("ViewerType", ["VIEWER_COMPOSITION", "VIEWER_LAYER", "VIEWER_FOOTAGE"], 0);
+var Language = __enum("Language", ["ENGLISH", "FRENCH", "GERMAN", "JAPANESE"], 0);
 var KeyframeLabel = __enum("KeyframeLabel", ["NONE"], 0);
 
 var __blendNames = {};
@@ -107,20 +111,78 @@ var $ = {
   global: __ecGlobal,
   level: 0,
   engineName: "boa",
+  get hiresTimer() { return __get("hiresTimer"); },
   get fileName() { return __get("app").scriptName; },
-  get os() { return "EffectCraft"; },
+  get os() { var a = __get("app"); return a.platform === "Mac" ? "Macintosh" : a.platform === "Win" ? "Windows" : a.os; },
   get version() { return "EffectCraft scripting"; },
-  get locale() { return "en_US"; },
-  evalFile: function () { throw __err("$.evalFile is not supported: scripts can't run scripts"); },
+  __locale: "en_US",
+  get locale() { return this.__locale; },
+  set locale(v) { this.__locale = v ? String(v) : "en_US"; },
+  localize: false,
+  evalFile: function (file) { return __evalFile(file instanceof File ? file.__path : String(file)); },
 };
+
+// Public ExtendScript localization behavior. No Adobe dictionary is bundled;
+// ZStrings use their embedded fallback text.
+function localize(value) {
+  var text = value;
+  if (value !== null && typeof value === "object") {
+    var loc = $.locale, platform = __get("app").platform;
+    var keys = [loc + "_" + platform, loc, loc.split("_")[0], "en"];
+    for (var i = 0; i < keys.length; i++) {
+      if (Object.prototype.hasOwnProperty.call(value, keys[i])) { text = value[keys[i]]; break; }
+    }
+    if (text === value) return value;
+  }
+  if (typeof text !== "string") return text;
+  if (text.substring(0, 3) === "$$$") {
+    var eq = text.indexOf("=");
+    if (eq >= 0) text = text.substring(eq + 1);
+  }
+  var args = arguments;
+  return text.replace(/%([1-9][0-9]*)/g, function (token, n) {
+    n = Number(n); return n < args.length ? String(args[n]) : token;
+  });
+}
+
+// ExtendScript errors expose their source position to catch handlers.
+function __errorLocation(error) {
+  var stack = String(error.stack || "");
+  var match = /\(([^\n]+):([0-9]+):[0-9]+\)/.exec(stack);
+  return match ? {file:match[1], line:Number(match[2])} : {file:$.fileName, line:0};
+}
+Object.defineProperty(Error.prototype, "line", {configurable:true, get:function () { return __errorLocation(this).line; }});
+Object.defineProperty(Error.prototype, "fileName", {configurable:true, get:function () { return __errorLocation(this).file; }});
+
+// BridgeTalk host identity for the AE-compatible scripting target. Cross-app
+// transport is not available: send reports failure rather than pretending that
+// another Adobe application received a message.
+function BridgeTalk() { this.target=""; this.body=""; }
+BridgeTalk.appName="aftereffects";
+BridgeTalk.appVersion="26.0";
+Object.defineProperty(BridgeTalk,"appLocale",{get:function(){return $.locale;}});
+BridgeTalk.appSpecifier="aftereffects-26.0";
+BridgeTalk.getSpecifier=function(name){return /^(aftereffects|effectcraft)(-|$)/.test(String(name)) ? BridgeTalk.appSpecifier : null;};
+BridgeTalk.getTargets=function(){return [BridgeTalk.appSpecifier];};
+BridgeTalk.isRunning=function(name){return BridgeTalk.getSpecifier(name)!==null;};
+BridgeTalk.prototype.send=function(){
+  if(typeof this.onError==="function")this.onError({body:"BridgeTalk message transport is not supported by EffectCraft",headers:{"Error-Code":"-1"}});
+  return false;
+};
+function ExternalObject(specifier) { throw __err("External native library is not supported by EffectCraft: "+String(specifier)); }
 
 // ------------------------------------------------------------------ File / Folder
 
 function __join(a, b) { return a.replace(/[\/\\]+$/, "") + "/" + b; }
+function __filePath(path) {
+  var p = path === undefined ? "" : __str(path);
+  if (p.substring(0, 7) === "file://") p = decodeURIComponent(p.substring(7));
+  return JSON.parse(__file("resolve", p, __folderCurrent || __get("scriptFolder", {name:"current"}) || ""));
+}
 
 function File(path) {
   if (!(this instanceof File)) return new File(path);
-  this.__path = path === undefined ? "" : __str(path);
+  this.__path = __filePath(path);
   this.__buf = null;
   this.__mode = null;
   this.__pos = 0;
@@ -152,9 +214,9 @@ File.prototype = {
         this.__buf = "";
         return true;
       }
-      this.__buf = JSON.parse(__file("read", this.__path));
+      this.__buf = JSON.parse(__file(String(this.encoding).toUpperCase() === "BINARY" ? "readBinary" : "read", this.__path));
     } else if (mode === "a") {
-      this.__buf = this.exists ? JSON.parse(__file("read", this.__path)) : "";
+      this.__buf = this.exists ? JSON.parse(__file(String(this.encoding).toUpperCase() === "BINARY" ? "readBinary" : "read", this.__path)) : "";
       this.__pos = this.__buf.length;
     } else {
       // Check the gate now, like After Effects refusing to open a file for writing.
@@ -191,7 +253,7 @@ File.prototype = {
   tell: function () { return this.__pos; },
   close: function () {
     if ((this.__mode === "w" || this.__mode === "a" || this.__mode === "e") && this.__buf !== null) {
-      __file("write", this.__path, this.__buf);
+      __file(String(this.encoding).toUpperCase() === "BINARY" ? "writeBinary" : "write", this.__path, this.__buf);
     }
     this.__buf = null;
     this.__mode = null;
@@ -212,11 +274,11 @@ File.openDialog = function () { return null; };
 File.saveDialog = function () { return null; };
 File.decode = function (s) { return decodeURIComponent(s); };
 File.encode = function (s) { return encodeURIComponent(s); };
-File.fs = "EffectCraft";
+Object.defineProperty(File, "fs", { get: function () { var p=__get("app").platform; return p === "Mac" ? "Macintosh" : p === "Win" ? "Windows" : "Unix"; } });
 
 function Folder(path) {
   if (!(this instanceof Folder)) return new Folder(path);
-  this.__path = path === undefined ? "" : __str(path);
+  this.__path = __filePath(path);
 }
 Folder.prototype = {
   constructor: Folder,
@@ -250,10 +312,15 @@ Folder.prototype = {
   selectDlg: function () { return null; },
 };
 Folder.selectDialog = function () { return null; };
-Object.defineProperty(Folder, "current", { get: function () { var d = __get("app").projectDir; return d ? new Folder(d) : null; } });
-Object.defineProperty(Folder, "temp", { get: function () { return null; } });
-Object.defineProperty(Folder, "desktop", { get: function () { return null; } });
-Object.defineProperty(Folder, "myDocuments", { get: function () { return null; } });
+var __folderCurrent = null;
+Object.defineProperty(Folder, "current", {
+  get: function () { var p=__folderCurrent || __get("scriptFolder", {name:"current"}); return p ? new Folder(p) : null; },
+  set: function (v) { var f = v instanceof Folder ? v : new Folder(v); if (f.exists) __folderCurrent = f.fsName; }
+});
+["temp", "desktop", "myDocuments", "userData", "appData", "commonFiles", "appPackage", "startup"].forEach(function (name) {
+  Object.defineProperty(Folder, name, {get:function () { var p=__get("scriptFolder", {name:name}); return p ? new Folder(p) : null; }});
+});
+Object.defineProperty(Folder, "fs", {get:function () { return File.fs; }});
 
 // TCP sockets (behind Allow Scripts to Write Files and Access Network; see socket.rs).
 function Socket() {
@@ -326,7 +393,11 @@ Socket.prototype = {
   },
   toString: function () { return "[object Socket]"; }
 };
-var system = { callSystem: function () { throw __err("scripts can't run system commands"); } };
+var system = {
+  get osName() { return $.os; },
+  get osVersion() { return __get("app").os; },
+  callSystem: function () { throw __err("scripts can't run system commands"); }
+};
 
 // ------------------------------------------------------------------ helpers
 
@@ -339,6 +410,18 @@ var __attr = {
     return c === null ? undefined : c;
   },
 };
+
+// ExtendScript lets a layer/group be called as shorthand for .property(key).
+// Keep its prototype and live accessors; a function's own name/length must not
+// shadow the host object's name or a property with that name.
+function __callableProperty(object) {
+  var fn = function (key) { return fn.property(key); };
+  delete fn.name;
+  delete fn.length;
+  Object.setPrototypeOf(fn, Object.getPrototypeOf(object));
+  Object.defineProperties(fn, Object.getOwnPropertyDescriptors(object));
+  return new Proxy(fn, __attr);
+}
 
 // 1-based collections with `[n]` access.
 var __coll = {
@@ -604,7 +687,7 @@ function PropertyGroup(layer, uid) {
   this.__layer = layer;
   this.__uid = uid;
   this.__kind = "PropertyGroup";
-  return new Proxy(this, __attr);
+  return __callableProperty(this);
 }
 PropertyGroup.prototype = Object.create(PropertyBase.prototype);
 PropertyGroup.prototype.constructor = PropertyGroup;
@@ -647,7 +730,7 @@ function MaskPropertyGroup(layer, uid) {
   this.__layer = layer;
   this.__uid = uid;
   this.__kind = "MaskPropertyGroup";
-  return new Proxy(this, __attr);
+  return __callableProperty(this);
 }
 MaskPropertyGroup.prototype = Object.create(PropertyGroup.prototype);
 MaskPropertyGroup.prototype.constructor = MaskPropertyGroup;
@@ -981,7 +1064,7 @@ Layer.prototype = {
     this.__comp = comp;
     this.__id = id;
     this.__kind = kind;
-    return new Proxy(this, __attr);
+    return __callableProperty(this);
   },
   __info: function () { return __get("layer", { comp: this.__comp, layer: this.__id }); },
   __p: function (o) {
@@ -1076,7 +1159,14 @@ Layer.prototype = {
     if (key === undefined || key === null) throw __err("property(): missing name or index");
     if (key === "Marker" || key === "ADBE Marker" || key === "marker") return this.marker;
     var k = typeof key === "number" ? key : String(key);
-    return __propOf(this, __get("child", { comp: this.__comp, layer: this.__id, uid: 0, key: k }));
+    var info = __get("child", { comp: this.__comp, layer: this.__id, uid: 0, key: k });
+    if (!info && typeof k === "string") {
+      // AE also exposes transform properties directly on a layer. Indexed
+      // lookup still addresses only the layer's top-level property groups.
+      var tr = __get("child", {comp:this.__comp, layer:this.__id, uid:0, key:"ADBE Transform Group"});
+      if (tr) info = __get("child", {comp:this.__comp, layer:this.__id, uid:tr.uid, key:k});
+    }
+    return __propOf(this, info);
   },
   propertyGroup: function () { return null; },
   canAddProperty: function () { return false; },
@@ -1453,7 +1543,7 @@ CompItem.prototype.constructor = CompItem;
     }
     return new LayerCollection(this.__id).byName(String(a));
   };
-  P.openInViewer = function () { __call("comp.open", { comp: this.__id }); return null; };
+  P.openInViewer = function () { __call("comp.open", { comp: this.__id }); return new Viewer(this.__id); };
   P.duplicate = function () { return __item(__call("project.duplicate", { items: [this.__id] }).items[0]); };
   // Essential Graphics (templates are EffectCraft's open .ectemplate files).
   P.__eg = function () { return __call("essential.list", { comp: this.__id }); };
@@ -1576,6 +1666,22 @@ OutputModule.prototype = {
 
 var __rqStatus = { "Unqueued": 3014, "Queued": 3015, "Needs Output": 3013, "Rendering": 3016, "Done": 3019, "User Stopped": 3017, "Failed": 3018 };
 
+// Live, one-based output-module collection, backed by the native render queue.
+function OMCollection(rq) {
+  this.__rq = rq;
+  return new Proxy(this, __coll);
+}
+OMCollection.prototype = {
+  constructor: OMCollection,
+  get length() { return this.__rq.numOutputModules; },
+  __at: function (i) { return i >= 1 && i <= this.length ? new OutputModule(this.__rq, i) : undefined; },
+  add: function () {
+    __call("render.addOutputModule", { item: this.__rq.__id });
+    return new OutputModule(this.__rq, this.length);
+  },
+  toString: function () { return "[object OMCollection]"; },
+};
+
 function RenderQueueItem(id) { this.__id = id; }
 RenderQueueItem.prototype = {
   constructor: RenderQueueItem,
@@ -1593,11 +1699,7 @@ RenderQueueItem.prototype = {
   get render() { return this.__info().render; },
   set render(v) { __call("renderQueue.setRender", { item: this.__id, render: !!v }); },
   get numOutputModules() { return this.__info().outputModules; },
-  get outputModules() {
-    var n = this.numOutputModules, out = [];
-    for (var i = 1; i <= n; i++) out.push(new OutputModule(this, i));
-    return out;
-  },
+  get outputModules() { return new OMCollection(this); },
   outputModule: function (i) {
     if (i < 1 || i > this.numOutputModules) throw __err("output module index " + i + " is out of range");
     return new OutputModule(this, i);
@@ -1759,10 +1861,10 @@ var app = {
   get isWatchFolder() { return false; },
   get isRenderEngine() { return false; },
   get isoLanguage() { return "en_US"; },
-  get language() { return 0; },
+  get language() { return Language.ENGLISH; },
   get memoryInUse() { return 0; },
   get effects() { return __get("effects").map(function (e) { return { displayName: e.name, matchName: e.matchName, category: e.category, version: "1.0" }; }); },
-  get activeViewer() { return null; },
+  get activeViewer() { var id=__get("project").activeComp; return id===null?null:new Viewer(id); },
   get availableGPUAccelTypes() { return []; },
   exitAfterLaunchAndEval: false,
   exitCode: 0,
@@ -1775,15 +1877,20 @@ var app = {
     saveSetting: function (sec, key, v) { __call("script.settings.save", { section: String(sec), key: String(key), value: String(v) }); },
   },
   preferences: {
-    havePref: function () { return false; },
-    getPrefAsString: function () { return ""; },
-    getPrefAsLong: function () { return 0; },
-    getPrefAsBool: function () { return false; },
-    getPrefAsFloat: function () { return 0; },
-    savePrefAsString: function () {},
-    savePrefAsLong: function () {},
-    savePrefAsBool: function () {},
-    savePrefAsFloat: function () {},
+    havePref: function (section, key, type) { return __isScriptPermission(section, key) || app.settings.haveSetting(__prefSection(section,type),String(key)); },
+    getPrefAsString: function (section, key, type) { return __isScriptPermission(section, key) ? (__get("app").allowFiles ? "1" : "0") : app.settings.getSetting(__prefSection(section,type),String(key)); },
+    getPrefAsLong: function (section, key, type) { return Math.trunc(Number(this.getPrefAsString(section, key, type))); },
+    getPrefAsBool: function (section, key, type) { return !!this.getPrefAsLong(section, key, type); },
+    getPrefAsFloat: function (section, key, type) { return Number(this.getPrefAsString(section, key, type)); },
+    savePrefAsString: function (section,key,value,type) {
+      if (__isScriptPermission(section,key)) throw __err("Change scripting permissions in Settings > Scripting & Expressions");
+      app.settings.saveSetting(__prefSection(section,type),String(key),String(value));
+    },
+    savePrefAsLong: function (section,key,value,type) { this.savePrefAsString(section,key,Math.trunc(__num(value)),type); },
+    savePrefAsBool: function (section,key,value,type) { this.savePrefAsString(section,key,value ? 1 : 0,type); },
+    savePrefAsFloat: function (section,key,value,type) { this.savePrefAsString(section,key,__num(value),type); },
+    // The engine persists each change synchronously; there is no deferred buffer.
+    saveToDisk: function () {},
     reload: function () {},
   },
   newProject: function () { __call("file.newProject", {}); return new Project(); },
@@ -1800,9 +1907,9 @@ var app = {
   purge: function () { __call("edit.purge", { what: "all" }); },
   findMenuCommandId: function (name) { return __get("menuCommandId", { name: String(name) }); },
   executeCommand: function (id) {
-    var cmd = typeof id === "number" ? __get("commandAt", { index: id }) : String(id);
+    var cmd = typeof id === "number" ? __get("commandAt", { index: id }) : {command:String(id), params:{}};
     if (!cmd) throw __err("Unknown command id " + id);
-    return __call(cmd, {});
+    return __call(cmd.command, cmd.params);
   },
   scheduleTask: function (code, delay, repeat) { return __task("schedule", String(code), !!repeat); },
   cancelTask: function (id) { __task("cancel", id); },
@@ -1818,6 +1925,11 @@ var app = {
   run: function (id, params) { return __call(String(id), params || {}); },
   toString: function () { return "[object Application]"; },
 };
+
+function __isScriptPermission(section, key) {
+  return /^(Main Pref Section(?: v[0-9]+)?|Scripting & Expressions)$/.test(String(section)) && String(key) === "Pref_SCRIPTING_FILE_NETWORK_SECURITY";
+}
+function __prefSection(section,type) { return "__ae_preferences__" + String(type === undefined ? 0 : type) + ":" + String(section); }
 
 // The completion value of a script, as JSON text for the host.
 function __result(v) {
@@ -1836,3 +1948,13 @@ function __result(v) {
     return JSON.stringify(String(v));
   }
 }
+
+// Composition viewers map to the engine's actual active composition. Layer and
+// footage viewers require frontend focus state before they can be exposed here.
+function Viewer(comp) { this.__comp=comp; }
+Viewer.prototype={
+  get type(){return ViewerType.VIEWER_COMPOSITION;},
+  get active(){return __get("project").activeComp===this.__comp;},
+  setActive:function(){__call("comp.open",{comp:this.__comp});return this.active;}
+};
+Object.defineProperty(Error.prototype,"description",{configurable:true,get:function(){return this.message;},set:function(v){this.message=String(v);}});

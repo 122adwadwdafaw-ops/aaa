@@ -417,11 +417,11 @@ fn engine_entry_points() {
     // Scripts can't run scripts.
     let r = s.execute("script.run", json!({"code": "app.run('script.run', {code: '1'})"})).unwrap();
     assert!(r["error"]["message"].as_str().unwrap().contains("scripts can't run scripts"), "{r}");
-    // Compiled .jsxbin scripts (by name or by their header) are unsupported, not a SyntaxError
-    // at 1:1 (#176).
-    for p in [json!({"code": "@JSXBIN@ES@2.0@MyBbyBn0AB", "name": "compiled.bin"}), json!({"code": "1", "name": "/x/compiled.JSXBIN"})] {
-        let e = s.execute("script.run", p.clone()).unwrap_err().to_string();
-        assert!(e.contains(".jsxbin scripts are not supported: run the .jsx source"), "{p}: {e}");
+    // Malformed compiled input gets a decoder diagnostic, not a misleading JS syntax error.
+    for p in [json!({"code": "@JSXBIN@ES@2.0@MyBbyBn0AB", "name": "compiled.bin"}), json!({"code": "@JSXBIN@ES@9.0@", "name": "/x/compiled.JSXBIN"})] {
+        let r = s.execute("script.run", p.clone()).unwrap();
+        assert_eq!(r["ok"], false);
+        assert!(r["error"]["message"].as_str().unwrap().contains("JSXBIN at byte"), "{p}: {r}");
     }
     // File ▸ Scripts ▸ Run Script File… runs .jsx as JavaScript.
     let dir = std::env::temp_dir().join(format!("ec-script-file-{}", std::process::id()));
@@ -449,7 +449,7 @@ fn engine_entry_points() {
 #[test]
 fn console_keeps_variables() {
     let mut s = session();
-    let req = |code: &'static str| effectcraft_engine::ScriptRequest { code, name: "console", console: true };
+    let req = |code: &'static str| effectcraft_engine::ScriptRequest { panel_title: None, code, name: "console", console: true };
     let r = crate::run(&mut s, &req("var counter = 41;"));
     assert!(r.error.is_none(), "{r:?}");
     let r = crate::run(&mut s, &req("counter + 1"));
