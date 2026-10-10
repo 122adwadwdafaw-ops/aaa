@@ -112,6 +112,11 @@ pub struct Hooks {
     /// Application actions the OS performs (`app.hide`, `app.hideOthers`, `app.showAll` on
     /// macOS). Returns false when the host doesn't handle the id.
     pub app_action: Option<Box<dyn Fn(&str) -> bool>>,
+    /// The presentation device was lost (#591). Called once, from the start of a frame, after a
+    /// recovery copy of the project was written and before anything is painted. egui-wgpu
+    /// panics on the main thread when asked to paint on a lost device, so the desktop app
+    /// tells the user and exits here; without this hook the frame goes on as before.
+    pub presentation_lost: Option<Box<dyn Fn(&gpu_failure::PresentationLoss)>>,
 }
 
 impl Hooks {
@@ -252,6 +257,7 @@ pub struct EffectcraftApp {
     gpu_checked: bool,
     gpu_failures: Option<gpu_failure::GpuFailureBridge>,
     gpu_failure_applied: Option<bool>,
+    presentation_loss_handed_over: bool,
     /// Commands from the native menu bar.
     pub command_inbox: Option<Receiver<String>>,
     /// Pointer position in comp pixels (Info panel).
@@ -326,6 +332,7 @@ impl EffectcraftApp {
             gpu_checked: false,
             gpu_failures: None,
             gpu_failure_applied: None,
+            presentation_loss_handed_over: false,
             command_inbox: None,
             pointer_comp: None,
             dialog_state: Default::default(),
@@ -563,6 +570,23 @@ impl EffectcraftApp {
         };
         log::warn!("GPU preview retired: {}", failure.reason);
         ctx.request_repaint();
+    }
+
+    /// A lost presentation device can't be drawn on again, and egui-wgpu panics when asked to:
+    /// write a recovery copy of the project and hand over to the host (once), before this frame
+    /// paints anything (#591).
+    fn hand_over_presentation_loss(&mut self) {
+        if self.presentation_loss_handed_over || self.hooks.presentation_lost.is_none() {
+            return;
+        }
+        let Some(failure) = self.gpu_failures.as_ref().and_then(gpu_failure::GpuFailureBridge::failure).filter(|f| f.presentation_lost) else { return };
+        self.presentation_loss_handed_over = true;
+        let recovery = self.session.autosave_now().and_then(|path| self.session.autosave_wait().map(|()| path)).map_err(|e| e.to_string());
+        let loss = gpu_failure::PresentationLoss { reason: failure.reason, recovery };
+        log::error!("graphics device lost; handing over to the host: {loss:?}");
+        if let Some(hook) = &self.hooks.presentation_lost {
+            hook(&loss);
+        }
     }
 
     /// Set up the GPU compositor on egui-wgpu's device (once). Without an adapter that runs
@@ -1577,6 +1601,7 @@ impl eframe::App for EffectcraftApp {
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_gpu_failure(ctx);
+        self.hand_over_presentation_loss();
         // The CJK fallback fonts depend on the interface language, so they follow a change of
         // Settings ▸ General ▸ Language instead of only the first frame.
         let language = crate::i18n::language(self);
@@ -1711,5 +1736,49 @@ mod gpu_failure_tests {
         assert!(app.session.project.comp(comp).unwrap().layers.is_empty());
         app.session.execute("edit.redo", json!({})).unwrap();
         assert_eq!(app.session.render(comp, Tick::ZERO, RenderOpts::default()).data, before.data);
+    }
+
+    /// A lost presentation device can't be painted on (egui-wgpu panics on the main thread),
+    /// so the app writes a recovery copy and hands over to the host before the next frame
+    /// paints, exactly once, and only for a lost device (#591).
+    #[test]
+    fn a_lost_presentation_device_saves_a_recovery_copy_and_hands_over_once() {
+        let dir = std::env::temp_dir().join(format!("effectcraft-591-{}", std::process::id()));
+        let mut session = Session { autosave_folder_override: Some(dir.clone()), ..Default::default() };
+        session.execute("comp.new", json!({"name": "Handover", "width": 4, "height": 4, "duration": 1})).unwrap();
+        let mut app = EffectcraftApp::new(session);
+        let ctx = egui::Context::default();
+        let bridge = gpu_failure::GpuFailureBridge::new(&ctx);
+        app.set_gpu_failure_bridge(bridge.clone());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        app.hooks.presentation_lost = Some(Box::new(move |loss| record.lock().unwrap().push(loss.clone())));
+
+        // A failure that leaves the presentation device alone (the GPU preview only) hands nothing over.
+        bridge.report("shared GPU preview failed", false);
+        app.hand_over_presentation_loss();
+        assert!(seen.lock().unwrap().is_empty());
+
+        bridge.report("GPU device lost (Unknown): Device is lost", true);
+        app.hand_over_presentation_loss();
+        app.hand_over_presentation_loss();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "handed over once");
+        assert!(seen[0].reason.contains("shared GPU preview failed"), "the first failure is the reason: {:?}", seen[0]);
+        let saved = seen[0].recovery.clone().expect("a recovery copy was written");
+        assert!(std::fs::read_to_string(&saved).unwrap().contains("Handover"), "the copy holds the project");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Without a host hook (tests, the web) a lost device keeps the old behaviour: nothing is
+    /// written and nothing is handed over.
+    #[test]
+    fn without_a_hook_a_lost_device_hands_nothing_over() {
+        let mut app = EffectcraftApp::new(Session::default());
+        let bridge = gpu_failure::GpuFailureBridge::new(&egui::Context::default());
+        app.set_gpu_failure_bridge(bridge.clone());
+        bridge.report("GPU device lost", true);
+        app.hand_over_presentation_loss();
+        assert!(!app.presentation_loss_handed_over);
     }
 }

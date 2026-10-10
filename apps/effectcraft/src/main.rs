@@ -179,6 +179,25 @@ fn main() -> eframe::Result {
             app.hooks.pick_open_project = Some(Box::new(|| {
                 rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj", "ecprojx"]).pick_file().map(|p| p.to_string_lossy().to_string())
             }));
+            // egui-wgpu panics on the main thread when it paints on a lost device (#591). The app
+            // has written a recovery copy by now; tell the user and end the process before the
+            // frame paints. The crash-recovery sentinel stays, so the next launch offers it.
+            let agent_run = control_port.is_some();
+            app.hooks.presentation_lost = Some(Box::new(move |loss| {
+                let saved = match &loss.recovery {
+                    Ok(path) => format!("A recovery copy of your project was saved to:\n{path}\n\nReopen EffectCraft to continue from it."),
+                    Err(e) => format!("A recovery copy could not be written ({e})."),
+                };
+                eprintln!("effectcraft: graphics device lost: {}\n{saved}", loss.reason);
+                if !agent_run {
+                    rfd::MessageDialog::new()
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_title("EffectCraft: graphics device lost")
+                        .set_description(format!("The graphics driver stopped responding, so EffectCraft has to close.\n\n{saved}"))
+                        .show();
+                }
+                std::process::exit(1);
+            }));
             app.hooks.audio_device = Some(Box::new(audio_out::open));
             app.hooks.audio_devices = Some(Box::new(audio_out::devices));
             app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));

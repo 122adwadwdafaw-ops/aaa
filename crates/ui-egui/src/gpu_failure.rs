@@ -14,6 +14,16 @@ pub struct GpuFailure {
     pub presentation_lost: bool,
 }
 
+/// What the app hands its host when the presentation device is lost, after it has written a
+/// recovery copy of the project. egui-wgpu cannot paint on a lost device (it panics on the
+/// main thread), so the host should end the process instead of letting another frame run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PresentationLoss {
+    pub reason: String,
+    /// The auto-save written before handing over: its path, or why it could not be written.
+    pub recovery: Result<String, String>,
+}
+
 #[derive(Default)]
 struct State {
     failure: Option<GpuFailure>,
