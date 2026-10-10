@@ -31,6 +31,8 @@ fn layer(s: &Session, id: u64) -> Layer {
 /// carrying controls, Curves and Levels (Individual Controls).
 fn app() -> (EffectcraftApp, Ids) {
     let mut s = Session::default();
+    // These tests query English captions regardless of the host language.
+    s.prefs.set("general.language", json!("en")).unwrap();
     s.execute("comp.new", json!({"name": "Main", "width": 640, "height": 360, "frameRate": 30, "duration": 10})).unwrap();
     s.execute("layer.newSolid", json!({"name": "Back", "color": "#20c040"})).unwrap();
     let small = s.execute("layer.newSolid", json!({"name": "Small", "color": "#ff0000", "width": 200, "height": 100})).unwrap()["layer"].as_u64().unwrap();
@@ -313,6 +315,7 @@ fn hover(h: &mut Harness<'_, EffectcraftApp>, pos: egui::Pos2) {
 #[test]
 fn right_click_in_effect_controls_shows_the_effect_menu() {
     let mut s = Session::default();
+    s.prefs.set("general.language", json!("en")).unwrap();
     s.execute("comp.new", json!({"name": "Main", "width": 320, "height": 180, "frameRate": 30, "duration": 4})).unwrap();
     let a = s.execute("layer.newSolid", json!({"name": "A", "color": "#406080"})).unwrap()["layer"].as_u64().unwrap();
     let b = s.execute("layer.newSolid", json!({"name": "B", "color": "#804060"})).unwrap()["layer"].as_u64().unwrap();

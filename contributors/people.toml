@@ -49,3 +49,8 @@ sync_github_name = false
 real_name = "Julen Llop"
 display_name = "Julen Llop"
 sync_github_name = false
+
+[people.lia-xim]
+real_name = "Matthias Ramahi"
+display_name = "Matthias Ramahi"
+sync_github_name = false

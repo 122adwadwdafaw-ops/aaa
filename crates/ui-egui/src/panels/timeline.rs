@@ -1282,7 +1282,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         (Icon::Flowchart, false, "flowchart", "Composition Mini-Flowchart"),
     ] {
         let r = Rect::from_min_size(pos2(bx - 24.0, top + 11.0), vec2(24.0, 24.0));
-        let resp = widgets::icon_button(ui, r, icon, on, &t, egui::Id::new(("tl-sw", id))).on_hover_text(tip);
+        let resp = widgets::icon_button(ui, r, icon, on, &t, egui::Id::new(("tl-sw", id))).on_hover_text(crate::i18n::tr(tip));
         app.auto.add(&format!("timeline.switch.{id}"), r, tip);
         if resp.clicked() {
             match id {
@@ -1510,7 +1510,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Column headers scroll with the outline and never spill into the time ruler.
     let hp = p.with_clip_rect(Rect::from_min_max(ch.min, pos2(graph_x0 - 1.0, ch.max.y)));
     let hic = |icon: Icon, x: f32| icons::paint(&hp, Rect::from_center_size(pos2(x, hy), vec2(12.0, 12.0)), icon, t.text_dim);
-    let htext = |x: f32, s: &str| hp.text(pos2(x, hy), Align2::LEFT_CENTER, s, Tokens::ui(11.0), t.text_dim);
+    let htext = |x: f32, s: &str| hp.text(pos2(x, hy), Align2::LEFT_CENTER, crate::i18n::tr(s), Tokens::ui(11.0), t.text_dim);
     if vis.av {
         hic(Icon::Eye, cw.av + 10.0);
         hic(Icon::Speaker, cw.av + 28.0);
@@ -1836,7 +1836,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 // Modes.
                 if app.ui.timeline.show_modes && layer.source.is_av() {
                     let mr = Rect::from_min_size(pos2(cw.mode + 2.0, cy - 9.0), vec2(80.0, 18.0));
-                    let mresp = widgets::dropdown(ui, mr, layer.blend_mode.label(), &t, egui::Id::new(("mode", layer.id.0)));
+                    let mresp = widgets::dropdown(ui, mr, crate::i18n::tr(layer.blend_mode.label()), &t, egui::Id::new(("mode", layer.id.0)));
                     app.auto.add(&format!("timeline.layer.{}.mode", layer.id.0), mr, "Mode");
                     let pop = egui::Id::new(("mode-pop", layer.id.0));
                     if mresp.clicked() {
@@ -1846,7 +1846,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         .iter()
                         .flat_map(|m| if m.ends_group() { vec![m.label().to_string(), "-".to_string()] } else { vec![m.label().to_string()] })
                         .collect();
-                    if let Some(i) = widgets::popup_menu(ui, pop, mr.left_bottom(), &opts, opts.iter().position(|o| o == layer.blend_mode.label())) {
+                    let shown: Vec<_> = opts.iter().map(|o| crate::i18n::tr(o).to_string()).collect();
+                    if let Some(i) = widgets::popup_menu(ui, pop, mr.left_bottom(), &shown, opts.iter().position(|o| o == layer.blend_mode.label())) {
                         actions.push(("layer.setBlendMode".into(), json!({"layers": [layer.id.0], "mode": opts[i]})));
                     }
                     let tr = Rect::from_center_size(pos2(cw.mode + 76.0 + 6.0, cy), vec2(14.0, 14.0));
@@ -1856,8 +1857,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     // Track matte: layer picker + kind.
                     let mr = Rect::from_min_size(pos2(cw.trkmat + 2.0, cy - 9.0), vec2(104.0, 18.0));
                     let label = match layer.track_matte {
-                        Some(m) => comp.layer(m.layer).map(|l| format!("{} {}", idx_of(l.id), l.name)).unwrap_or("None".into()),
-                        None => "No Track Matte".into(),
+                        Some(m) => comp.layer(m.layer).map(|l| format!("{} {}", idx_of(l.id), l.name)).unwrap_or(crate::i18n::tr("None").into()),
+                        None => crate::i18n::tr("No Track Matte").into(),
                     };
                     let tresp = widgets::dropdown(ui, mr, &label, &t, egui::Id::new(("trkmat", layer.id.0)));
                     app.auto.add(&format!("timeline.layer.{}.trackMatte", layer.id.0), mr, "Track Matte");
@@ -1867,7 +1868,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                     // The menu lists every layer: built only while it is open (per visible row
                     // it made a big comp's timeline quadratic).
-                    let mut opts = vec!["No Track Matte".to_string(), "-".to_string()];
+                    let mut opts = vec![crate::i18n::tr("No Track Matte").to_string(), "-".to_string()];
                     let mut candidates: Vec<&Layer> = vec![];
                     if widgets::popup_is_open(ui, pop) {
                         for (i, l) in comp.layers.iter().enumerate().filter(|(_, l)| l.id != layer.id && l.source.is_av()) {
@@ -1876,7 +1877,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                         opts.push("-".into());
                         for k in MatteKind::ALL {
-                            opts.push(k.label().into());
+                            opts.push(crate::i18n::tr(k.label()).into());
                         }
                     }
                     if let Some(i) = widgets::popup_menu(ui, pop, mr.left_bottom(), &opts, None) {
@@ -1886,7 +1887,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             let kind = layer.track_matte.map(|m| m.kind).unwrap_or_default();
                             actions
                                 .push(("layer.setTrackMatte".into(), json!({"layer": layer.id.0, "matte": candidates[i - 2].id.0, "kind": kind_name(kind)})));
-                        } else if let Some(k) = MatteKind::ALL.into_iter().find(|k| k.label() == opts[i])
+                        } else if let Some(k) = MatteKind::ALL.into_iter().find(|k| crate::i18n::tr(k.label()) == opts[i])
                             && let Some(m) = layer.track_matte
                         {
                             actions.push(("layer.setTrackMatte".into(), json!({"layer": layer.id.0, "matte": m.layer.0, "kind": kind_name(k)})));
@@ -1910,7 +1911,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         crate::i18n::tr("Parent pick whip: drag onto a layer"),
                     );
                     let pr_rect = Rect::from_min_size(pos2(cw.parent + 20.0, cy - 9.0), vec2(94.0, 18.0));
-                    let plabel = layer.parent.and_then(|p| comp.layer(p)).map(|l| format!("{}. {}", idx_of(l.id), l.name)).unwrap_or_else(|| "None".into());
+                    let plabel = layer
+                        .parent
+                        .and_then(|p| comp.layer(p))
+                        .map(|l| format!("{}. {}", idx_of(l.id), l.name))
+                        .unwrap_or_else(|| crate::i18n::tr("None").into());
                     let presp = widgets::dropdown(ui, pr_rect, &plabel, &t, egui::Id::new(("parent", layer.id.0)));
                     app.auto.add(&format!("timeline.layer.{}.parent", layer.id.0), pr_rect, "Parent");
                     let pop = egui::Id::new(("par-pop", layer.id.0));
@@ -1918,7 +1923,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         widgets::open_popup(ui, pop);
                     }
                     let mut cands: Vec<&Layer> = vec![];
-                    let mut popts = vec!["None".to_string(), "-".to_string()];
+                    let mut popts = vec![crate::i18n::tr("None").to_string(), "-".to_string()];
                     if widgets::popup_is_open(ui, pop) {
                         for (i, l) in comp.layers.iter().enumerate().filter(|(_, l)| l.id != layer.id) {
                             popts.push(format!("{}. {}", i + 1, l.name));
@@ -2387,6 +2392,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 // 3D layers show Rotation as "Z Rotation" next to X/Y Rotation.
                 let is_tr_rot = layer.transform().and_then(|t| t.get("rotation")).is_some_and(|r| r.uid == prop.uid);
                 let base = if is_tr_rot && prop.name == "Rotation" && layer.is_3d() { "Z Rotation".to_string() } else { prop.name.clone() };
+                // Only built-in transform properties are localized; effect and user names stay verbatim.
+                let base = if layer.transform().is_some_and(|g| g.props().any(|p| p.uid == prop.uid)) { crate::i18n::tr(&base).to_string() } else { base };
                 let pname = if prop.has_expression() { format!("{base}  =") } else { base };
                 lp.text(
                     pos2(name_x, cy),
@@ -3161,7 +3168,7 @@ fn dash_buttons(
         [("+", "shape.dashes.add", "Add a Dash or Gap"), ("\u{2212}", "shape.dashes.remove", "Remove a Dash or Gap")].into_iter().enumerate()
     {
         let r = Rect::from_center_size(pos2(x + 12.0 + i as f32 * 20.0, cy), vec2(16.0, 16.0));
-        let resp = ui.interact(r, egui::Id::new(("tl-dash", uid, i)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::new(("tl-dash", uid, i)), Sense::click()).on_hover_text(crate::i18n::tr(tip));
         p.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
         p.text(r.center(), Align2::CENTER_CENTER, sym, Tokens::ui(12.0), if resp.hovered() { t.text } else { t.text_dim });
         app.auto.add(&format!("timeline.group.{uid}.{}", if i == 0 { "addDash" } else { "removeDash" }), r, tip);

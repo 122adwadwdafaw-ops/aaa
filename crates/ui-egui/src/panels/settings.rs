@@ -71,8 +71,8 @@ fn page_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, page: &Page, cur: &Value
                 let sel = get(key).as_str().unwrap_or("").to_string();
                 ui.horizontal(|ui| {
                     ui.add_sized(vec2(label_w, 18.0), egui::Label::new(tr("Default Output:")));
-                    let shown = if sel.is_empty() { "System Default".to_string() } else { sel.clone() };
-                    let r = egui::ComboBox::from_id_salt(("settings", key)).selected_text(shown).width(260.0).show_ui(ui, |ui| {
+                    let shown = if sel.is_empty() { tr("System Default").to_string() } else { sel.clone() };
+                    let r = egui::ComboBox::from_id_salt(("settings", key)).selected_text(&shown).width(260.0).show_ui(ui, |ui| {
                         if ui.selectable_label(sel.is_empty(), tr("System Default")).clicked() {
                             acts.push(Act::Set(key.into(), json!("")));
                         }
@@ -108,7 +108,7 @@ fn page_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, page: &Page, cur: &Value
                     }
                     _ => {
                         ui.horizontal(|ui| {
-                            ui.add_sized(vec2(label_w, 18.0), egui::Label::new(format!("{}:", tr(label))).truncate());
+                            ui.add_sized(vec2(label_w, 18.0), egui::Label::new(format!("{}:", tr(label))).wrap());
                             let r = match kind {
                                 Kind::Int(lo, hi, unit) => {
                                     let mut x = v.as_i64().unwrap_or(0);
@@ -137,7 +137,7 @@ fn page_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, page: &Page, cur: &Value
                                     ui.label(RichText::new(tr("Darker")).color(t.text_dim));
                                     let r = ui.add(egui::Slider::new(&mut x, lo..=hi).show_value(false));
                                     ui.label(RichText::new(tr("Lighter")).color(t.text_dim));
-                                    if ui.small_button("Default").clicked() {
+                                    if ui.small_button(tr("Default")).clicked() {
                                         acts.push(Act::Set(key.into(), json!(0.0)));
                                     }
                                     if r.changed() {
@@ -195,7 +195,7 @@ fn page_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, page: &Page, cur: &Value
                 }
                 if let Some(r) = resp {
                     let r = match tip {
-                        Some(tip) => r.on_hover_text(tip),
+                        Some(tip) => r.on_hover_text(tr(tip)),
                         None => r,
                     };
                     reg(app, &id, &r, label);
@@ -411,7 +411,7 @@ fn models_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, t: &Tokens, acts: &mut
                     (false, false, true) => format!("Not installed: {user} uses the classic engine"),
                     _ => "Not installed".to_string(),
                 };
-                ui.label(RichText::new(state).color(if active { t.accent } else { t.text_dim }));
+                ui.label(RichText::new(tr(&state)).color(if active { t.accent } else { t.text_dim }));
             });
             ui.label(RichText::new(m["description"].as_str().unwrap_or_default()).color(t.text_dim));
             if let Some(by) = m["authors"].as_str() {
@@ -424,7 +424,7 @@ fn models_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, t: &Tokens, acts: &mut
                 }
                 for (label, key) in [("Project page", "homepage"), ("Licence", "licenceUrl")] {
                     if let Some(url) = m[key].as_str() {
-                        let r = ui.link(label);
+                        let r = ui.link(tr(label));
                         if r.clicked() {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
                         }
@@ -541,7 +541,7 @@ fn browser_storage_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, t: &Tokens, a
         for (what, label) in
             [("diskCache", "Clear Disk Cache"), ("media", "Clear Imported Media"), ("autoSaves", "Clear Auto-Saves"), ("projects", "Clear Saved Projects")]
         {
-            let r = ui.button(label);
+            let r = ui.button(tr(label));
             reg(app, &format!("settings.storage.clear.{what}"), &r, label);
             if r.clicked() {
                 acts.push(Act::Run("storage.clear".into(), json!({"what": what})));

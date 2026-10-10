@@ -209,7 +209,7 @@ fn about(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
         let mut tab = ui.data_mut(|d| d.get_temp::<usize>(tab_id)).unwrap_or(0);
         ui.horizontal(|ui| {
             for (i, (label, id)) in ABOUT_TABS.iter().enumerate() {
-                let r = ui.selectable_label(tab == i, *label);
+                let r = ui.selectable_label(tab == i, tr(label));
                 app.auto.add(&format!("about.tab.{id}"), r.rect, label);
                 if r.clicked() {
                     tab = i;
@@ -384,9 +384,9 @@ fn solid(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
                 .find(|(_, v)| (v - par).abs() < 1e-3)
                 .map(|p| p.0.to_string())
                 .unwrap_or_else(|| format!("{par:.2}"));
-            let r = egui::ComboBox::from_id_salt("solid-par").width(240.0).selected_text(cur).show_ui(ui, |ui| {
+            let r = egui::ComboBox::from_id_salt("solid-par").width(240.0).selected_text(tr(&cur)).show_ui(ui, |ui| {
                 for (label, v) in super::comp_settings::PIXEL_ASPECTS {
-                    if ui.selectable_label((v - par).abs() < 1e-3, *label).clicked() {
+                    if ui.selectable_label((v - par).abs() < 1e-3, tr(label)).clicked() {
                         par = *v;
                     }
                 }
@@ -396,11 +396,13 @@ fn solid(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
         });
         let pct = |a: u32, b: u32| 100.0 * a as f64 / b.max(1) as f64;
         ui.label(
-            egui::RichText::new(format!(
-                "Width: {:.1}% of comp\nHeight: {:.1}% of comp\nFrame Aspect Ratio: {}",
-                pct(size[0], comp_size.0),
-                pct(size[1], comp_size.1),
-                super::comp_settings::aspect_label(size[0] as f64 * par, size[1] as f64)
+            egui::RichText::new(tr_args(
+                "Width: {}% of comp\nHeight: {}% of comp\nFrame Aspect Ratio: {}",
+                &[
+                    &format!("{:.1}", pct(size[0], comp_size.0)),
+                    &format!("{:.1}", pct(size[1], comp_size.1)),
+                    &super::comp_settings::aspect_label(size[0] as f64 * par, size[1] as f64),
+                ],
             ))
             .color(Color32::GRAY),
         );
@@ -476,11 +478,15 @@ fn palette(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
         let mut v: Vec<(String, String, serde_json::Value, String)> = crate::menus::menu_items(app)
             .into_iter()
             .filter(|m| m.enabled)
-            .map(|m| (m.path.join(" ▸ ") + " ▸ " + &m.label, m.id, if m.params.is_null() { json!({}) } else { m.params }, m.shortcut.unwrap_or_default()))
+            .map(|m| {
+                let path = m.path.iter().map(|part| crate::i18n::label(app, "", part)).collect::<Vec<_>>().join(" ▸ ");
+                let label = crate::i18n::label(app, &m.id, &m.label);
+                (path + " ▸ " + label, m.id, if m.params.is_null() { json!({}) } else { m.params }, m.shortcut.unwrap_or_default())
+            })
             .collect();
         for c in effectcraft_engine::command_specs().iter().filter(|c| c.menu.is_empty() && c.journal && c.params == "{}") {
             if app.session.is_enabled(c.id) {
-                v.push((c.label.to_string(), c.id.to_string(), json!({}), c.shortcut.unwrap_or("").to_string()));
+                v.push((tr(c.label).to_string(), c.id.to_string(), json!({}), c.shortcut.unwrap_or("").to_string()));
             }
         }
         v
