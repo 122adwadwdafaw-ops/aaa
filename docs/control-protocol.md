@@ -51,6 +51,8 @@ export formats, parity summary), `jobs.list` (Progress panel jobs, e.g. the back
 rendered now) → `{width, height, max_abs, mean_abs, alpha_max_abs, psnr_db, ssim, changed_pixels,
 changed_pct, pass, diff_path?, diff_png?}` (metrics and size rules in
 [agents.md](agents.md#verify-your-change-snapshot--edit--compare)).
+Analysis queries (see [mcp.md](mcp.md#analysis-tools)):
+`layer.bounds {comp?, time?, layers?, pixels?, overlaps?}` (layer geometry in comp space).
 
 Every engine command is reachable through `engine.execute`, and every interactive widget of every
 panel registers an element id; both are enforced by `crates/ui-egui/tests/ui_agent_audit.rs`.
