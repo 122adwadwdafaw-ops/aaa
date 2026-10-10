@@ -1248,6 +1248,7 @@ dependencies = [
  "effectcraft-time",
  "effectcraft-track",
  "exr",
+ "gif",
  "image",
  "kurbo",
  "log",
