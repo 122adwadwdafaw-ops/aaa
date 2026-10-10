@@ -45,6 +45,7 @@ pub mod sequence;
 mod session_settings;
 pub mod shortcuts;
 pub mod storage;
+pub mod suggest;
 pub mod sysinfo;
 pub mod templates;
 pub mod tracking;
@@ -79,7 +80,7 @@ pub use render_queue::{ExportJob, ExportResult, Exporter, JobState};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    #[error("unknown command `{0}`")]
+    #[error("unknown command `{0}`{hint}", hint = suggest::command_hint(.0))]
     UnknownCommand(String),
     #[error("command `{0}` is not available right now: {1}")]
     Disabled(String, String),

@@ -30,7 +30,7 @@ The server provides the same core conventions as FilmCraft #28:
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `command_list` | `filter?`, `enabled_only?`, `schemas?` | Command catalog |
+| `command_list` | `filter?`, `enabled_only?`, `schemas?`, `brief?` (ids + labels only) | Command catalog |
 | `command_run` | `id`, `params?` | Engine command result |
 | `command_batch` | `steps: [{id, params?}]`, `stop_on_error?` | `completed`, `failed`, per-step `results` |
 | `doc_inspect` | none | Project overview and active composition |
@@ -67,8 +67,8 @@ at full resolution, `layer` one layer solo, `item` a footage or solid item, and 
 bounds, anchors, motion paths, safe margins or the grid. Contact sheets hold at most 64 cells;
 larger `count`s are capped and reported (`requested`, `note`).
 
-Unknown top-level tool argument keys return JSON-RPC `-32602` naming the key and accepted
-arguments. EffectCraft already rejects unknown engine command parameters; that behaviour is
+Unknown top-level tool argument keys return JSON-RPC `-32602` naming the key, the closest accepted
+one (`command_run {"command": …}` → "did you mean `id`?") and the accepted arguments. EffectCraft already rejects unknown engine command parameters; that behaviour is
 preserved. Tool failures (including escaped panics) return `isError: true`, and so does any JSON
 result with a `failed` count above zero (a `command_batch` / `batch` with a failed step, a
 render whose queue items did not all finish), even though the other steps or items succeeded:
