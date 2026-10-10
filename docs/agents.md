@@ -122,6 +122,7 @@ See [MCP conventions](mcp.md) for core tools, resources, strict arguments, and p
 | `render_snapshot {name, comp?, time?, max_side?, transparent?}` | Render a frame and keep it in the session under `name` (16 kept, oldest dropped; the same name replaces). |
 | `render_compare {a, b, threshold?, min_psnr?, max_side?, amplify?, diff_path?, inline?}` | Compare two frames. `a` and `b` are each a snapshot name (or `{snapshot}`), `{path}` (a PNG/JPEG golden or After Effects reference) or `{comp?, time?, transparent?}` (render now; `{}` = active comp at the CTI). Returns `{width, height, max_abs, mean_abs, alpha_max_abs, psnr_db, ssim, changed_pixels, changed_pct, pass}` and, when something changed, the diff heatmap as an image. See [Verify your change](#verify-your-change-snapshot--edit--compare). |
 | `get_layout {comp?, time?, layers?, pixels?, overlaps?}` | Where layers are on screen at a time, without rendering (`layer.bounds`): `visible` (and `why` not), comp-space `bounds` [x,y,w,h], `corners`, `center`, `anchorInComp`, `onScreen` (0-1) and the layer-space `source` rect, after parenting and (3D) the active camera. `pixels` adds the drawn pixels' bounds (effects included); `overlaps` lists overlapping visible layers. |
+| `analyze_audio {comp?, start?, end?, layer?, silence_db?, min_silence?, true_peak?, waveform?, width?, height?, path?}` | Measure the audio mix (`audio.analyze`): peak / true peak dBFS, RMS, integrated LUFS (BS.1770), clipped samples, silent ranges, per-channel stats; `waveform` returns a waveform image. No audio gives `hasAudio: false`. |
 | `open_project {path \| demo \| new}` / `save_project {path?}` | Open and save files. |
 | `undo {steps?}` / `redo {steps?}` | History. |
 | `history {goto?}` | The branching undo history (History panel): every state with its index, id, label, branch depth and whether it's current; `goto` (an index or id) jumps to any state, on any branch, without losing the others. |
@@ -223,6 +224,7 @@ Short recipes; every step is one tool call.
 | Check the result | `render_frame {"time":1.5,"max_side":640}`; with a UI (`--ui` / `--bridge`) `screenshot {"panel":"Timeline"}` |
 | Prove what an edit changed | `render_snapshot {"name":"before"}` → edit → `render_compare {"a":"before","b":{}}` (metrics + diff heatmap) |
 | Is the title centred and on screen? | `get_layout {"layers":["Title"],"time":2}` → compare `center` with half the comp size, `onScreen` should be 1; `get_layout {"overlaps":true}` for collisions |
+| Check the soundtrack | `analyze_audio {}` → `integratedLufs` (streaming targets about -14), `truePeakDbtp` under -1, `clippedSamples` 0, `silences`; `analyze_audio {"waveform":true}` to see it |
 | Undo a mistake | `undo {}`, or `history {}` then `history {"goto": n}` |
 | Missing media after opening | `execute_command footage.check {"wait":true}` → `{checked, missing, probed}`; then `file.findMissing {"what":"footage"}` |
 | Save | `save_project {"path":"out.ecproj"}` |
