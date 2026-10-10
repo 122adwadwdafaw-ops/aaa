@@ -178,13 +178,13 @@ fn sequence_fields(app: &EffectcraftApp, runs: &[Vec<String>]) -> Vec<Field> {
     let what = |files: &[String]| {
         let name = sequence_name(files).unwrap_or_default();
         match effectcraft_engine::sequence::missing_report(files) {
-            Some(gaps) => format!("{name}: {} files, {gaps}", files.len()),
-            None => format!("{name}: {} files", files.len()),
+            Some(gaps) => tr_args("{}: {} files, {}", &[&name, &files.len(), &gaps]),
+            None => tr_args("{}: {} files", &[&name, &files.len()]),
         }
     };
     let note = match runs {
-        [one] => format!("{} – numbered stills of one image sequence.", what(one)),
-        _ => format!("{} image sequences: {}.", runs.len(), runs.iter().map(|r| what(r)).collect::<Vec<_>>().join("; ")),
+        [one] => tr_args("{} – numbered stills of one image sequence.", &[&what(one)]),
+        _ => tr_args("{} image sequences: {}.", &[&runs.len(), &runs.iter().map(|r| what(r)).collect::<Vec<_>>().join("; ")]),
     };
     vec![
         Field::note("note", &note),
@@ -193,6 +193,16 @@ fn sequence_fields(app: &EffectcraftApp, runs: &[Vec<String>]) -> Vec<Field> {
         Field::num("frameRate", "Frame rate (fps)", app.session.prefs.import.sequence_fps),
         Field::note("after", "Change the frame rate, alpha and start frame later with File ▸ Interpret Footage."),
     ]
+}
+
+// Keep source captions stable for automation; localize only when drawing them.
+fn field_label(field: &Field) -> String {
+    if field.key == "sequence"
+        && let Some(ext) = field.label.strip_suffix(" Sequence")
+    {
+        return tr_args("{} Sequence", &[&ext]);
+    }
+    tr(&field.label).to_owned()
 }
 
 /// Fields to type a numeric property value in (`value`, or `value[0]`… per dimension).
@@ -759,7 +769,7 @@ pub fn show_form(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
         .fields
         .iter()
         .map(|fl| match &fl.kind {
-            FieldKind::Note(text) => 10.0 + 15.0 * (text.chars().count() as f32 / 40.0).ceil().max(1.0),
+            FieldKind::Note(text) => 10.0 + 15.0 * (tr(text).chars().count() as f32 / 40.0).ceil().max(1.0),
             _ => 30.0,
         })
         .sum();
@@ -770,7 +780,7 @@ pub fn show_form(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
     super::dialogs::modal(ctx, &f.title.clone(), vec2(480.0, h), t, |ui| {
         egui::Grid::new("form-grid").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
             for (i, fl) in f.fields.iter_mut().enumerate() {
-                ui.label(tr(&fl.label));
+                ui.add_sized(egui::vec2(160.0, 18.0), egui::Label::new(field_label(fl)).wrap());
                 let r = match &mut fl.kind {
                     FieldKind::Number { value, speed } => {
                         let dec = if *speed < 0.01 { 5 } else { 3 };
@@ -932,6 +942,19 @@ pub fn show_view_options(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Toke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sequence_caption_changes_language_without_changing_automation_label() {
+        let app = EffectcraftApp::new(effectcraft_engine::Session::default());
+        crate::i18n::set_current("de");
+        let fields = sequence_fields(&app, &[vec!["Frame_0001.png".into(), "Frame_0002.png".into()]]);
+        let sequence = fields.iter().find(|field| field.key == "sequence").unwrap();
+        assert_eq!(sequence.label, "PNG Sequence");
+        assert_eq!(field_label(sequence), "PNG-Sequenz");
+        crate::i18n::set_current("en");
+        assert_eq!(field_label(sequence), "PNG Sequence");
+        assert_eq!(sequence.label, "PNG Sequence");
+    }
 
     #[test]
     fn form_params_build_arrays_and_choices() {

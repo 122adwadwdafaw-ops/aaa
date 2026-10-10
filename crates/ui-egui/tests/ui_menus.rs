@@ -10,6 +10,8 @@ use serde_json::json;
 
 fn harness() -> Harness<'static, EffectcraftApp> {
     let mut s = Session::default();
+    // These tests query English captions regardless of the host language.
+    s.prefs.set("general.language", json!("en")).unwrap();
     s.execute("file.openDemoProject", json!({})).unwrap();
     let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(|_| EffectcraftApp::new(s));
     h.run_steps(3);

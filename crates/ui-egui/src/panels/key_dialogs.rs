@@ -270,7 +270,7 @@ pub fn time_stretch(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
         ui.add_space(10.0);
         ui.label(egui::RichText::new(tr("Hold In Place")).font(Tokens::medium(12.5)));
         for (i, l) in ["Layer In-point", "Current Frame", "Layer Out-point"].into_iter().enumerate() {
-            let r = ui.radio_value(&mut d.hold, i, l);
+            let r = ui.radio_value(&mut d.hold, i, tr(l));
             app.auto.add(&format!("dialog.timeStretch.hold.{i}"), r.rect, l);
         }
         (ok, cancel) = buttons(ui, app, t, "dialog.timeStretch");

@@ -275,7 +275,7 @@ fn field(ui: &mut Ui, rect: Rect, text: &mut String, hint: &str, t: &Tokens, sea
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
     child.add(
         egui::TextEdit::singleline(text)
-            .hint_text(hint)
+            .hint_text(crate::i18n::tr(hint))
             .frame(egui::Frame::NONE)
             .desired_width(inner.width())
             // As tall as the field, so the text and the hint sit on its middle (they sat high, #581).
@@ -325,7 +325,7 @@ pub fn text_button(ui: &mut Ui, rect: Rect, text: &str, primary: bool, t: &Token
         t.hover
     };
     ui.painter().rect_filled(rect, rect.height() / 2.0, bg);
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, Tokens::medium(12.0), if primary { Color32::WHITE } else { t.text });
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, crate::i18n::tr(text), Tokens::medium(12.0), if primary { Color32::WHITE } else { t.text });
     resp
 }
 

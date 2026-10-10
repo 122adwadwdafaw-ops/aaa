@@ -64,8 +64,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         app.auto.add(&format!("tools.{cur:?}"), r, cur.label());
         let tip = match cur.shortcut() {
-            Some(s) => format!("{} ({})", cur.label(), crate::menus::shortcut_text(s)),
-            None => cur.label().to_string(),
+            Some(s) => format!("{} ({})", tr(cur.label()), crate::menus::shortcut_text(s)),
+            None => tr(cur.label()).to_string(),
         };
         let resp = resp.on_hover_text(tip);
         let held = ui.data(|d| d.get_temp::<egui::Id>(held_id)) == Some(id);
@@ -101,7 +101,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let close_behavior = if held && resp.clicked() { egui::PopupCloseBehavior::IgnoreClicks } else { egui::PopupCloseBehavior::CloseOnClickOutside };
             egui::Popup::menu(&resp).open_memory(command).close_behavior(close_behavior).show(|ui| {
                 for tool in slot.iter() {
-                    let row = ui.selectable_label(app.ui.tool == *tool, tool.label());
+                    let row = ui.selectable_label(app.ui.tool == *tool, tr(tool.label()));
                     app.auto.add(&format!("tools.select.{tool:?}"), row.rect, tool.label());
                     if row.clicked() {
                         app.ui.tool = *tool;
@@ -198,7 +198,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         [("hdr-github", Icon::Code, "EffectCraft on GitHub", "help.github"), ("hdr-web", Icon::Globe, "EffectCraft on getartcraft.com", "help.appPage")]
     {
         let r = Rect::from_min_max(pos2(rx - 26.0, cy - 13.0), pos2(rx, cy + 13.0));
-        if widgets::icon_button(ui, r, icon, false, &t, egui::Id::new(id)).on_hover_text(tip).clicked() {
+        if widgets::icon_button(ui, r, icon, false, &t, egui::Id::new(id)).on_hover_text(tr(tip)).clicked() {
             let _ = app.session.execute(cmd, json!({}));
         }
         app.auto.add(&format!("header.{}", &id[4..]), r, tip);
@@ -311,7 +311,7 @@ fn creates_buttons(app: &mut EffectcraftApp, ui: &mut egui::Ui, mut x: f32, cy: 
     for (mask, icon, tip, key) in [(false, Icon::ShapeLayer, "Tool Creates Shape", "createsShape"), (true, Icon::MaskVis, "Tool Creates Mask", "createsMask")] {
         let r = Rect::from_min_size(pos2(x, cy - 13.0), vec2(26.0, 26.0));
         let on = app.session.state.shape_tool.creates_mask == mask;
-        if widgets::icon_button(ui, r, icon, on, &t, egui::Id::new(("tool-creates", key))).on_hover_text(tip).clicked() {
+        if widgets::icon_button(ui, r, icon, on, &t, egui::Id::new(("tool-creates", key))).on_hover_text(tr(tip)).clicked() {
             tool_options(app, json!({"createsMask": mask}));
         }
         app.auto.add(&format!("header.{key}"), r, tip);

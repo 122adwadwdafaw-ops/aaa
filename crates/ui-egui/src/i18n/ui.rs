@@ -19,7 +19,7 @@ use std::fmt::Display;
 use std::sync::OnceLock;
 
 thread_local! {
-    /// The resolved interface language ("en", "ja", "zh-hans", "zh-hant", "uk"); "en" until the first
+    /// The resolved interface language ("en", "de", "ja", "zh-hans", "zh-hant", "uk"); "en" until the first
     /// frame sets it.
     static CURRENT: Cell<&'static str> = const { Cell::new("en") };
 }
@@ -44,8 +44,10 @@ fn catalog(language: &str) -> Option<&'static Index> {
     static HANS: OnceLock<Index> = OnceLock::new();
     static HANT: OnceLock<Index> = OnceLock::new();
     static UK: OnceLock<Index> = OnceLock::new();
+    static GERMAN: OnceLock<Index> = OnceLock::new();
     let (index, rows) = match language {
         "ja" => (&JA, JAPANESE),
+        "de" => (&GERMAN, super::de::UI),
         "zh-hans" => (&HANS, SIMPLIFIED_CHINESE),
         "zh-hant" => (&HANT, TRADITIONAL_CHINESE),
         "uk" => (&UK, UKRAINIAN),
@@ -56,7 +58,20 @@ fn catalog(language: &str) -> Option<&'static Index> {
 
 /// Translate one interface string: the current language's row for `text`, or `text` itself.
 pub(crate) fn tr(text: &str) -> &str {
-    catalog(current()).and_then(|c| c.get(text)).copied().unwrap_or(text)
+    translate(current(), text)
+}
+
+/// Disambiguate source words used with different meanings, retaining the ordinary fallback.
+pub(crate) fn tr_context<'a>(context: &str, text: &'a str) -> &'a str {
+    if current() == "de" {
+        super::de::CONTEXT.iter().find(|(c, source, _)| *c == context && *source == text).map(|(_, _, translation)| *translation).unwrap_or_else(|| tr(text))
+    } else {
+        tr(text)
+    }
+}
+
+pub(super) fn translate<'a>(language: &str, text: &'a str) -> &'a str {
+    catalog(language).and_then(|c| c.get(text)).copied().unwrap_or(text)
 }
 
 /// Translate an interface string that carries values: each `{}` takes the next argument. A missing
@@ -510,7 +525,7 @@ const JAPANESE: &[(&str, &str)] = &[
     ("⚠ {} is used by:", "⚠ {}は次のコマンドで使用中:"),
 ];
 
-const SIMPLIFIED_CHINESE: &[(&str, &str)] = &[
+pub(super) const SIMPLIFIED_CHINESE: &[(&str, &str)] = &[
     ("   OK   ", "   确定   "),
     ("  Delete  ", "  删除  "),
     (" Open Auto-Save ", " 打开自动保存 "),

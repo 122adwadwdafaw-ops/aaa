@@ -95,6 +95,11 @@ fn main() {
         }
     };
     let mut session = effectcraft_host::session();
+    // An explicit override enables isolated persistence tests; ordinary snapshots stay ephemeral.
+    if let Some(dir) = std::env::var_os("EFFECTCRAFT_CONFIG_DIR") {
+        session.config = Some(std::sync::Arc::new(effectcraft_engine::config::DirConfig::new(std::path::PathBuf::from(dir))));
+        session.load_settings();
+    }
     if args.demo {
         let _ = session.execute("file.openDemoProject", json!({}));
     }

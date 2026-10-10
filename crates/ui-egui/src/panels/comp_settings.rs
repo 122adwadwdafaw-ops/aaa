@@ -166,8 +166,8 @@ fn timecode_field(ui: &mut egui::Ui, buf: &mut Option<String>, secs: &mut f64, r
         }
         *buf = None;
     }
-    let base = format!("Base {}{}", rate.timecode_base(), if df { "drop" } else { "" });
-    ui.label(egui::RichText::new(format!("is {shown}  {base}")).color(Color32::GRAY));
+    let base = format!("{}{}", rate.timecode_base(), if df { "drop" } else { "" });
+    ui.label(egui::RichText::new(tr_args("is {}  Base {}", &[&shown, &base])).color(Color32::GRAY));
     r
 }
 
@@ -182,7 +182,7 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens, auto: &mut Registr
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         for (tab, label, key) in [(Tab::Basic, "Basic", "basic"), (Tab::Advanced, "Advanced", "advanced"), (Tab::Renderer, "3D Renderer", "renderer")] {
-            let r = ui.selectable_label(d.tab == tab, label);
+            let r = ui.selectable_label(d.tab == tab, tr(label));
             auto.add(&format!("dialog.comp.tab.{key}"), r.rect, label);
             if r.clicked() {
                 d.tab = tab;
@@ -200,9 +200,9 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens, auto: &mut Registr
                     .find(|(_, w, h, par, f)| *w == d.width && *h == d.height && (par - d.pixel_aspect).abs() < 1e-3 && (f - d.fps).abs() < 1e-3)
                     .map(|p| p.0)
                     .unwrap_or("Custom");
-                let r = egui::ComboBox::from_id_salt("comp-preset").width(300.0).selected_text(current).show_ui(ui, |ui| {
+                let r = egui::ComboBox::from_id_salt("comp-preset").width(300.0).selected_text(tr(current)).show_ui(ui, |ui| {
                     for (name, w, h, par, f) in PRESETS {
-                        if ui.selectable_label(*name == current, *name).clicked() {
+                        if ui.selectable_label(*name == current, tr(name)).clicked() {
                             (d.width, d.height, d.pixel_aspect, d.fps) = (*w, *h, *par, *f);
                         }
                     }
@@ -214,7 +214,7 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens, auto: &mut Registr
                     let (ow, oh) = (d.width, d.height);
                     let r = ui.add(crate::widgets::drag_value(egui::DragValue::new(&mut d.width).range(4..=30000).suffix(" px")));
                     auto.add("dialog.comp.width", r.rect, "Width");
-                    let lbl = format!("Lock Aspect Ratio to {}", aspect_label(ow as f64, oh as f64));
+                    let lbl = tr_args("Lock Aspect Ratio to {}", &[&aspect_label(ow as f64, oh as f64)]);
                     let r = ui.checkbox(&mut d.lock_aspect, lbl);
                     auto.add("dialog.comp.lockAspect", r.rect, "Lock Aspect Ratio");
                     if d.lock_aspect && ow != d.width && ow > 0 {
@@ -237,9 +237,9 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens, auto: &mut Registr
                         .find(|(_, v)| (v - d.pixel_aspect).abs() < 1e-3)
                         .map(|p| p.0.to_string())
                         .unwrap_or_else(|| format!("{:.2}", d.pixel_aspect));
-                    let r = egui::ComboBox::from_id_salt("comp-par").width(220.0).selected_text(cur).show_ui(ui, |ui| {
+                    let r = egui::ComboBox::from_id_salt("comp-par").width(220.0).selected_text(tr(&cur)).show_ui(ui, |ui| {
                         for (name, v) in PIXEL_ASPECTS {
-                            if ui.selectable_label((v - d.pixel_aspect).abs() < 1e-3, *name).clicked() {
+                            if ui.selectable_label((v - d.pixel_aspect).abs() < 1e-3, tr(name)).clicked() {
                                 d.pixel_aspect = *v;
                             }
                         }
@@ -286,7 +286,7 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens, auto: &mut Registr
                 ui.horizontal(|ui| {
                     let r = crate::widgets::srgb_color_button(ui, &mut d.bg);
                     auto.add("dialog.comp.background", r.rect, "Background Color");
-                    ui.label(color_name(d.bg));
+                    ui.label(tr(color_name(d.bg)));
                 });
                 ui.end_row();
             });

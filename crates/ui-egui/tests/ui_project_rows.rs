@@ -13,6 +13,8 @@ use serde_json::json;
 /// A closed folder holding a comp, and a solid at the project root: (harness, folder, comp, solid).
 fn harness() -> (Harness<'static, EffectcraftApp>, ItemId, ItemId, ItemId) {
     let mut s = Session::default();
+    // These tests query English captions regardless of the host language.
+    s.prefs.set("general.language", json!("en")).unwrap();
     let comp = ItemId(s.execute("comp.new", json!({"name": "Main", "width": 320, "height": 180, "duration": 4})).unwrap()["comp"].as_u64().unwrap());
     s.execute("layer.newSolid", json!({"name": "Solid", "color": "#406080"})).unwrap();
     let solid = s.project.items.values().find(|i| matches!(i.kind, ItemKind::Solid(_))).unwrap().id;

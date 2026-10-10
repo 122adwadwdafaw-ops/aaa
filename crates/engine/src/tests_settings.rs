@@ -627,6 +627,20 @@ fn interface_language_is_validated_persisted_and_backward_compatible() {
 }
 
 #[test]
+fn german_language_survives_a_new_session_and_switches_back_to_english() {
+    let store = Arc::new(MemoryConfig::default());
+    let mut s = Session { config: Some(store.clone()), ..Default::default() };
+    assert!(crate::prefs::LANGUAGES.contains(&("Deutsch", "de")));
+    for language in ["en", "de", "en", "de"] {
+        s.execute("prefs.set", json!({"key": "general.language", "value": language})).unwrap();
+        let mut restarted = Session { config: Some(store.clone()), ..Default::default() };
+        restarted.load_settings();
+        assert_eq!(restarted.prefs.general.language, language);
+    }
+    assert_eq!(Prefs::from_json(r#"{"general":{"language":"de"}}"#).general.language, "de");
+}
+
+#[test]
 fn unicode_label_colors_fall_back_without_panicking() {
     use effectcraft_color::Label;
     let mut s = Session::default();

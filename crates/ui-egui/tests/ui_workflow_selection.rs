@@ -8,6 +8,8 @@ use serde_json::json;
 
 fn harness() -> Harness<'static, EffectcraftApp> {
     let mut s = Session::default();
+    // These tests query English captions regardless of the host language.
+    s.prefs.set("general.language", json!("en")).unwrap();
     s.execute("comp.new", json!({"name":"Study", "width":640,"height":360,"duration":4})).unwrap();
     for n in 0..4 {
         s.execute("layer.newSolid", json!({"name":format!("Tile {n}"),"width":80,"height":80,"color":"#406080"})).unwrap();

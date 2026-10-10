@@ -42,7 +42,8 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for (icon, cmd, tip) in buttons {
         let r = Rect::from_min_size(pos2(x, y), vec2(bw, 28.0));
         let icon = if cmd == "playback.toggle" && app.playback.playing { Icon::Pause } else { icon };
-        if widgets::icon_button(ui, r, icon, cmd == "playback.toggle" && app.playback.playing, &t, egui::Id::new(("pv", cmd))).on_hover_text(tip).clicked() {
+        if widgets::icon_button(ui, r, icon, cmd == "playback.toggle" && app.playback.playing, &t, egui::Id::new(("pv", cmd))).on_hover_text(tr(tip)).clicked()
+        {
             // The play button plays with the options of the shortcut shown below.
             let params = if cmd == "playback.toggle" { json!({"shortcut": current.id()}) } else { json!({}) };
             let _ = crate::menus::invoke(app, &ctx, cmd, params);
@@ -56,7 +57,7 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let xv = rect.min.x + 92.0;
     let wv = (rect.max.x - xv - 12.0).clamp(80.0, 240.0);
     let label = |yy: f32, k: &str| {
-        p.text(pos2(x0, yy), Align2::LEFT_CENTER, k, Tokens::ui(12.0), t.text_dim);
+        p.text(pos2(x0, yy), Align2::LEFT_CENTER, tr(k), Tokens::ui(12.0), t.text_dim);
     };
     let mut yy = y + 46.0;
 
@@ -86,16 +87,19 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ("loop", "Loop", o.loop_),
         ("cacheBeforePlayback", "Cache Before Playback", o.cache_before_playback),
     ];
+    let check_width =
+        checks.iter().take(4).map(|(_, text, _)| p.layout_no_wrap(tr(text).to_string(), Tokens::ui(12.0), t.text).size().x + 26.0).fold(110.0_f32, f32::max);
+    let columns = if rect.width() - 24.0 >= check_width * 2.0 { 2 } else { 1 };
     for (i, (key, text, on)) in checks.into_iter().enumerate() {
-        let col = if i < 4 { i % 2 } else { 0 };
-        let row = if i < 4 { i / 2 } else { i - 2 };
-        let cx = x0 + col as f32 * 110.0 - 2.0;
+        let col = if i < 4 { i % columns } else { 0 };
+        let row = if i < 4 { i / columns } else { 4_usize.div_ceil(columns) + i - 4 };
+        let cx = x0 + col as f32 * check_width - 2.0;
         let cy = yy + row as f32 * 22.0;
         if check_row(app, ui, &p, pos2(cx, cy), key, text, on) {
             changes.push(json!({"shortcut": current.id(), key: !on}));
         }
     }
-    yy += 4.0 * 22.0 + 6.0;
+    yy += (4_usize.div_ceil(columns) + 2) as f32 * 22.0 + 6.0;
 
     // Range (and the pre/post-roll of Play Around Current Time).
     label(yy, "Range");
@@ -116,7 +120,7 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if o.range == PreviewRange::AroundCurrentTime {
         for (k, (key, text, v)) in [("preRoll", "Pre-roll", o.pre_roll), ("postRoll", "Post-roll", o.post_roll)].into_iter().enumerate() {
             let lx = xv + k as f32 * 100.0;
-            p.text(pos2(lx, yy), Align2::LEFT_CENTER, text, Tokens::ui(11.5), t.text_dim);
+            p.text(pos2(lx, yy), Align2::LEFT_CENTER, tr(text), Tokens::ui(11.5), t.text_dim);
             let (r, nv, _) = widgets::hot_number_at(ui, pos2(lx + 52.0, yy - 9.0), egui::Id::new(("pv-roll", key)), v, 0.05, (0.0, 600.0), 1, "s", &t);
             app.auto.add(&format!("preview.{key}"), r, text);
             if let Some(nv) = nv {
@@ -159,8 +163,17 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         changes.push(json!({"shortcut": current.id(), "frameRate": v}));
     }
     let sx = xv + 106.0;
-    p.text(pos2(sx, yy), Align2::LEFT_CENTER, tr("Skip"), Tokens::ui(12.0), t.text_dim);
-    let (r, nv, _) = widgets::hot_number_at(ui, pos2(sx + 30.0, yy - 9.0), egui::Id::new("pv-skip"), o.skip as f64, 0.1, (0.0, 99.0), 0, "", &t);
+    let skip_width = p.layout_no_wrap(tr("Skip").to_string(), Tokens::ui(12.0), t.text_dim).size().x;
+    let mut skip_x = sx + 30.0_f32.max(skip_width + 8.0);
+    let skip_label_x = if skip_x + 32.0 > rect.max.x - 12.0 {
+        yy += 24.0;
+        skip_x = xv.max(x0 + skip_width + 8.0);
+        x0
+    } else {
+        sx
+    };
+    p.text(pos2(skip_label_x, yy), Align2::LEFT_CENTER, tr("Skip"), Tokens::ui(12.0), t.text_dim);
+    let (r, nv, _) = widgets::hot_number_at(ui, pos2(skip_x, yy - 9.0), egui::Id::new("pv-skip"), o.skip as f64, 0.1, (0.0, 99.0), 0, "", &t);
     app.auto.add("preview.skip", r, "Skip");
     if let Some(nv) = nv {
         changes.push(json!({"shortcut": current.id(), "skip": nv.round() as u32}));
@@ -195,7 +208,7 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     yy += 24.0;
 
     // What stopping does.
-    p.text(pos2(x0, yy), Align2::LEFT_CENTER, tr_args("On ({}) stop:", &[&(current.label())]), Tokens::ui(11.5), t.text_dim);
+    p.text(pos2(x0, yy), Align2::LEFT_CENTER, tr_args("On ({}) stop:", &[&tr(current.label())]), Tokens::ui(11.5), t.text_dim);
     yy += 20.0;
     if check_row(app, ui, &p, pos2(x0 - 2.0, yy), "playCachedFrames", "If caching, play cached frames", o.play_cached_frames) {
         changes.push(json!({"shortcut": current.id(), "playCachedFrames": !o.play_cached_frames}));
@@ -224,8 +237,14 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         p.rect_filled(bar, 3.0, t.field_bg);
         let f = (cached as f32 / total.max(1) as f32).min(1.0);
         p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * f, bar.height())), 3.0, t.cache_green);
-        let status = if app.playback.playing && app.playback.caching { " — caching before playback" } else { "" };
-        p.text(pos2(bar.min.x, bar.max.y + 12.0), Align2::LEFT_CENTER, format!("{cached} / {total} frames cached{status}"), Tokens::ui(11.0), t.text_faint);
+        let status = if app.playback.playing && app.playback.caching { tr(" — caching before playback") } else { "" };
+        p.text(
+            pos2(bar.min.x, bar.max.y + 12.0),
+            Align2::LEFT_CENTER,
+            tr_args("{} / {} frames cached{}", &[&cached, &total, &status]),
+            Tokens::ui(11.0),
+            t.text_faint,
+        );
     }
     ui.set_clip_rect(panel_clip);
     let content = yy + 30.0 - (rect.min.y - scroll.offset);
@@ -241,7 +260,7 @@ fn check_row(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, at:
     let t = app.tokens;
     let r = Rect::from_min_size(pos2(at.x, at.y - 8.0), vec2(16.0, 16.0));
     let clicked = widgets::checkbox(ui, r, on, &t, egui::Id::new(("pv-check", key))).clicked();
-    p.text(pos2(r.max.x + 5.0, at.y), Align2::LEFT_CENTER, text, Tokens::ui(12.0), t.text);
+    p.text(pos2(r.max.x + 5.0, at.y), Align2::LEFT_CENTER, tr(text), Tokens::ui(12.0), t.text);
     app.auto.add(&format!("preview.{key}"), r, text);
     clicked
 }
@@ -251,7 +270,7 @@ fn check_row(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, at:
 fn dropdown_row(app: &mut EffectcraftApp, ui: &mut egui::Ui, r: Rect, key: &str, text: &str, items: &[String], current: Option<usize>) -> Option<usize> {
     let t = app.tokens;
     let pid = egui::Id::new(("pv-pop", key));
-    if widgets::dropdown(ui, r, text, &t, pid.with("btn")).clicked() {
+    if widgets::dropdown(ui, r, tr(text), &t, pid.with("btn")).clicked() {
         let open: bool = ui.data(|d| d.get_temp(pid.with("open")).unwrap_or(false));
         ui.data_mut(|d| d.insert_temp(pid.with("open"), !open));
     }
@@ -263,7 +282,7 @@ fn dropdown_row(app: &mut EffectcraftApp, ui: &mut egui::Ui, r: Rect, key: &str,
         ui.set_min_width(r.width().max(140.0));
         let mut chosen = None;
         for (i, label) in items.iter().enumerate() {
-            let resp = ui.selectable_label(current == Some(i), label.as_str());
+            let resp = ui.selectable_label(current == Some(i), tr(label.as_str()));
             app.auto.add(&format!("preview.{key}.{i}"), resp.rect, label);
             if resp.clicked() {
                 chosen = Some(i);
@@ -349,7 +368,7 @@ pub fn audio(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             p.text(pos2(lx, top - 9.0), Align2::LEFT_CENTER, &name, Tokens::ui(11.0), t.text_dim);
             for (i, (k, v)) in [("Left", a), ("Right", b)].into_iter().enumerate() {
                 let y = top + 12.0 + i as f32 * 20.0;
-                p.text(pos2(lx, y), Align2::LEFT_CENTER, k, Tokens::ui(12.0), t.text_dim);
+                p.text(pos2(lx, y), Align2::LEFT_CENTER, tr(k), Tokens::ui(12.0), t.text_dim);
                 p.text(pos2(lx + 44.0, y), Align2::LEFT_CENTER, format!("{v:+.1} dB"), Tokens::ui(12.0), t.hot_text);
             }
         }

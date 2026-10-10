@@ -6,12 +6,13 @@
 use crate::EffectcraftApp;
 
 /// Translations for the panels, tooltips and dialogs below the menu bar (see the module docs).
+mod de;
 mod ui;
 use effectcraft_engine::menus::MenuEntry;
-pub(crate) use ui::{set_current, tr, tr_args};
+pub(crate) use ui::{set_current, tr, tr_args, tr_context};
 
 /// Every language with a catalog, in the order Settings ▸ General ▸ Language lists them.
-const CATALOG_CODES: [&str; 6] = ["ja", "zh-hans", "zh-hant", "uk", "es", "pt-br"];
+const CATALOG_CODES: [&str; 7] = ["de", "ja", "zh-hans", "zh-hant", "uk", "es", "pt-br"];
 
 /// The active interface language: the stored preference when it names a catalog, otherwise `en`
 /// (English is the source of every label and needs no lookup).
@@ -72,13 +73,14 @@ fn system_language() -> &'static str {
 }
 
 /// The language EffectCraft shows for a BCP 47 locale (`ja-JP` → `ja`, `zh-Hans-CN` → `zh-hans`,
-/// `zh-TW` → `zh-hant`, `uk-UA` → `uk`, `es-ES` → `es`, `pt-BR` → `pt-br`).
+/// `zh-TW` → `zh-hant`, `uk-UA` → `uk`, `es-ES` → `es`, `pt-BR` → `pt-br`, `de-DE` / `de-AT` / `de-CH` → `de`).
 fn supported(locale: Option<&str>) -> &'static str {
     let Some(locale) = locale else { return "en" };
     let mut parts = locale.split(['-', '_']);
     let primary = parts.next().unwrap_or_default().to_ascii_lowercase();
     let rest: Vec<String> = parts.map(|p| p.to_ascii_lowercase()).collect();
     match primary.as_str() {
+        "de" => "de",
         "ja" => "ja",
         "uk" => "uk",
         "es" => "es",
@@ -104,6 +106,7 @@ pub(crate) fn label<'a>(app: &EffectcraftApp, command: &str, source: &'a str) ->
         }
     }
     match language {
+        "de" => lookup(de::MENU, command, source),
         "ja" => lookup(JAPANESE, command, source),
         "zh-hans" => lookup(SIMPLIFIED_CHINESE, command, source),
         "zh-hant" => lookup(TRADITIONAL_CHINESE, command, source),
@@ -124,6 +127,7 @@ pub(crate) fn entry(app: &EffectcraftApp, e: &MenuEntry, shown: String) -> Strin
     // Undo/redo names come from the history, so they are formatted per language here rather than
     // looked up in a catalog. An English (or untranslated) interface keeps the shown label.
     let (undo, no_undo, redo, no_redo) = match language(app) {
+        "de" => ("Rückgängig", "Nichts rückgängig zu machen", "Wiederholen", "Nichts zu wiederholen"),
         "ja" => ("取り消し", "取り消しできません", "やり直し", "やり直しできません"),
         "zh-hans" => ("撤销", "无可撤销的操作", "重做", "无可重做的操作"),
         "zh-hant" => ("復原", "沒有可復原的操作", "重做", "沒有可重做的操作"),
@@ -133,8 +137,20 @@ pub(crate) fn entry(app: &EffectcraftApp, e: &MenuEntry, shown: String) -> Strin
         _ => return shown,
     };
     match e.command.as_str() {
-        "edit.undo" => app.session.history.undo.last().map(|u| format!("{undo} {}", u.0)).unwrap_or_else(|| no_undo.into()),
-        "edit.redo" => app.session.history.redo.last().map(|u| format!("{redo} {}", u.0)).unwrap_or_else(|| no_redo.into()),
+        "edit.undo" => app
+            .session
+            .history
+            .undo
+            .last()
+            .map(|u| format!("{undo} {}", if language(app) == "de" { ui::translate("de", &u.0) } else { &u.0 }))
+            .unwrap_or_else(|| no_undo.into()),
+        "edit.redo" => app
+            .session
+            .history
+            .redo
+            .last()
+            .map(|u| format!("{redo} {}", if language(app) == "de" { ui::translate("de", &u.0) } else { &u.0 }))
+            .unwrap_or_else(|| no_redo.into()),
         "window.panel" => {
             let prefix = format!("{}: ", e.label);
             if let Some(name) = shown.strip_prefix(&prefix) {
@@ -152,6 +168,17 @@ pub(crate) fn entry(app: &EffectcraftApp, e: &MenuEntry, shown: String) -> Strin
 
 pub(crate) fn submenu(app: &EffectcraftApp, source: &str, shown: String) -> String {
     match language(app) {
+        "de" => {
+            if source == "Assign Shortcut to Workspace" {
+                if let Some(name) = shown.strip_prefix("Assign Shortcut to “").and_then(|s| s.strip_suffix("” Workspace")) {
+                    return format!("Tastenkürzel für Arbeitsumgebung „{name}“ zuweisen");
+                }
+            } else if source == "Assign Shortcut to 3D View"
+                && let Some(name) = shown.strip_prefix("Assign Shortcut to “").and_then(|s| s.strip_suffix('”'))
+            {
+                return format!("Tastenkürzel für 3D-Ansicht „{name}“ zuweisen");
+            }
+        }
         "uk" => {
             if source == "Assign Shortcut to Workspace" {
                 if let Some(name) = shown.strip_prefix("Assign Shortcut to “").and_then(|s| s.strip_suffix("” Workspace")) {
@@ -3999,6 +4026,7 @@ mod tests {
         let mut ukrainian_keys = BTreeSet::new();
         let mut spanish_keys = BTreeSet::new();
         let mut portuguese_keys = BTreeSet::new();
+        let mut german_keys = BTreeSet::new();
         for (catalog, unique) in [
             (JAPANESE, &mut japanese_keys),
             (SIMPLIFIED_CHINESE, &mut chinese_keys),
@@ -4006,6 +4034,7 @@ mod tests {
             (UKRAINIAN, &mut ukrainian_keys),
             (SPANISH, &mut spanish_keys),
             (PORTUGUESE, &mut portuguese_keys),
+            (de::MENU, &mut german_keys),
         ] {
             for (command, en, translated) in catalog {
                 let key = (command.to_string(), en.to_string());
@@ -4032,6 +4061,7 @@ mod tests {
         assert_eq!(traditional_keys, spanish_keys, "the languages must translate the same entries");
         assert_eq!(spanish_keys, portuguese_keys, "the languages must translate the same entries");
         assert_eq!(japanese_keys, ukrainian_keys, "the languages must translate the same entries");
+        assert_eq!(japanese_keys, german_keys, "German must cover every fixed menu entry");
     }
 
     /// Exercise each engine spelling on every host: a macOS-only run must still catch a
@@ -4115,7 +4145,7 @@ mod tests {
             (Some("pt_PT.UTF-8"), "pt-br"),
             (Some("en-US"), "en"),
             (Some("jv-ID"), "en"),
-            (Some("de-DE"), "en"),
+            (Some("de-DE"), "de"),
             (None, "en"),
         ] {
             assert_eq!(supported(locale), language, "{locale:?}");
@@ -4370,6 +4400,41 @@ mod tests {
             "Atribuir atalho à área de trabalho “Default”"
         );
         assert_eq!(submenu(&app, "Assign Shortcut to 3D View", "Assign Shortcut to “Top”".into()), "Atribuir atalho à visualização 3D “Top”");
+    }
+
+    #[test]
+    fn german_locales_and_preferences_resolve_without_affecting_other_languages() {
+        for locale in ["de", "de-DE", "de-AT", "de-CH", "de_DE.UTF-8", "DE-ch", "de-Latn-DE"] {
+            assert_eq!(supported(Some(locale)), "de", "{locale}");
+        }
+        for (stored, expected) in [("de", "de"), ("en", "en"), ("unknown", "en")] {
+            assert_eq!(code(stored), expected);
+        }
+    }
+
+    #[test]
+    fn german_native_menus_keep_ids_values_shortcuts_and_user_names() {
+        let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+        app.session.execute("prefs.set", json!({"key":"general.language", "value":"en"})).unwrap();
+        app.session.prefs.push_recent("/tmp/File.ecproj");
+        let en = crate::native_menu::build(&app);
+        app.session.execute("prefs.set", json!({"key":"general.language", "value":"de"})).unwrap();
+        let de = crate::native_menu::build(&app);
+        assert_eq!(en.items().len(), de.items().len());
+        assert!(de.items().iter().any(|i| i.command == "file.openRecent" && i.label == "File.ecproj"));
+        for (before, after) in en.items().iter().zip(de.items()) {
+            assert_eq!((&before.id, &before.command, &before.params, &before.shortcut), (&after.id, &after.command, &after.params, &after.shortcut));
+        }
+        assert!(de.items().iter().any(|i| i.command == "file.save" && i.label == "Speichern"));
+        assert_eq!(label(&app, "effect.add", "Gaussian Blur"), "Gaussian Blur");
+        let user = MenuEntry { label: "Layer".into(), command: "window.panel".into(), params: json!({}), shortcut: None };
+        assert_eq!(entry(&app, &user, "Layer: File".into()), "Ebene: File");
+        assert_eq!(
+            submenu(&app, "Assign Shortcut to Workspace", "Assign Shortcut to “File” Workspace".into()),
+            "Tastenkürzel für Arbeitsumgebung „File“ zuweisen"
+        );
+        app.session.execute("prefs.set", json!({"key":"general.language", "value":"en"})).unwrap();
+        assert_eq!(crate::native_menu::build(&app), en);
     }
 
     #[test]

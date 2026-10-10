@@ -200,7 +200,7 @@ pub fn panel_menu_popup(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
                         ("Enable Motion Blur", "motionBlur"),
                         ("Draft 3D", "draft3d"),
                     ] {
-                        if ui.button(label).clicked() {
+                        if ui.button(tr(label)).clicked() {
                             let _ = app.session.execute("comp.setSwitch", serde_json::json!({"switch": id}));
                             close = true;
                         }
@@ -218,14 +218,14 @@ pub fn panel_menu_popup(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
                         ("Show Grid", "view.grid"),
                         ("Title/Action Safe", "view.safeMargins"),
                     ] {
-                        if ui.button(label).clicked() {
+                        if ui.button(tr(label)).clicked() {
                             let _ = crate::menus::invoke(app, &ui.ctx().clone(), cmd, serde_json::json!({}));
                             close = true;
                         }
                     }
                 }
                 _ => {
-                    ui.label(egui::RichText::new(panel.title()).weak());
+                    ui.label(egui::RichText::new(crate::i18n::tr(panel.title())).weak());
                 }
             }
         });

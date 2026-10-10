@@ -255,7 +255,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     } else {
         let hint = "Select an item to see its details";
-        let r = widgets::text_fit(&p, head.center(), Align2::CENTER_CENTER, hint, Tokens::ui(11.0), head.width() - 20.0, t.text_faint);
+        let r = widgets::text_fit(&p, head.center(), Align2::CENTER_CENTER, crate::i18n::tr(hint), Tokens::ui(11.0), head.width() - 20.0, t.text_faint);
         app.auto.add("project.details.hint", r, hint);
     }
     // Search.
@@ -293,7 +293,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             continue;
         }
         let resp = ui.interact(hr.intersect(hdr), egui::Id::new(("proj-sort", *key)), Sense::click());
-        hp.with_clip_rect(hr).text(pos2(*x, hdr.center().y), Align2::LEFT_CENTER, *label, Tokens::ui(11.0), if resp.hovered() { t.text } else { t.text_dim });
+        hp.with_clip_rect(hr).text(
+            pos2(*x, hdr.center().y),
+            Align2::LEFT_CENTER,
+            crate::i18n::tr_context("project.column", label),
+            Tokens::ui(11.0),
+            if resp.hovered() { t.text } else { t.text_dim },
+        );
         if *key == "label" {
             icons::paint(&hp, Rect::from_center_size(pos2(label_x, hdr.center().y), vec2(10.0, 10.0)), Icon::Keyframe, t.text_dim);
         }
@@ -500,7 +506,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             let cp = lp.with_clip_rect(cell);
             let txt = match *key {
-                "type" => it.type_name().to_string(),
+                "type" => crate::i18n::tr(it.type_name()).to_string(),
                 "size" => file_size(it).map(fmt_size).unwrap_or_default(),
                 "duration" => it.duration().map(|d| fmt_dur(d.seconds(), it.frame_rate().map(|r| r.as_f64()).unwrap_or(30.0))).unwrap_or_default(),
                 "fps" => it.frame_rate().map(|f| format!("{:.2}", f.as_f64())).unwrap_or_default(),
@@ -747,7 +753,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         for (key, label, command) in
             [("newComp", "New Composition…", "comp.new"), ("newFolder", "New Folder", "project.newFolder"), ("import", "Import File…", "file.import")]
         {
-            let response = ui.button(label);
+            let response = ui.button(crate::i18n::tr(label));
             app.auto.add(&format!("project.context.{key}"), response.rect, label);
             if response.clicked() {
                 actions.push((command.into(), json!({})));
@@ -813,7 +819,7 @@ fn column_menu(app: &mut EffectcraftApp, resp: &egui::Response) {
         ui.label(egui::RichText::new(crate::i18n::tr("Columns")).weak());
         for (key, label, _) in COLUMNS {
             let mut on = app.ui.project_columns.iter().any(|c| c == key);
-            if ui.checkbox(&mut on, label).changed() {
+            if ui.checkbox(&mut on, crate::i18n::tr(label)).changed() {
                 set_column(&mut app.ui.project_columns, key, on);
             }
         }

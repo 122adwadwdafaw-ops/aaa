@@ -60,6 +60,8 @@ fn new_comp(s: &mut Session, name: &str) -> u64 {
 #[test]
 fn new_viewers_lock_route_comps_and_activate_on_click() {
     let mut s = Session::default();
+    // These tests query English captions regardless of the host language.
+    s.prefs.set("general.language", json!("en")).unwrap();
     let c = new_comp(&mut s, "C");
     let b = new_comp(&mut s, "B");
     let a = new_comp(&mut s, "A");

@@ -33,7 +33,10 @@ impl Accelerator for TimedAccel {
     }
     fn comp_frame(&self, _r: &Renderer, _comp: ItemId, _t: Tick) -> Option<crate::Image> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(self.delay);
+        // A zero-duration sleep yields on Windows, which would make the fast mock slow.
+        if !self.delay.is_zero() {
+            std::thread::sleep(self.delay);
+        }
         // The centre of the comp, as the CPU draws it (a red solid).
         self.handle.then(|| {
             let mut img = crate::Image::new(200, 100);

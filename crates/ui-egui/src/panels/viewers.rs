@@ -297,5 +297,5 @@ pub fn on_close(app: &mut EffectcraftApp, p: PanelKind) {
 /// The tab label of viewer `id` ("Composition Intro").
 pub fn title(app: &EffectcraftApp, id: u32) -> Option<String> {
     let c = comp_of(app, id)?;
-    Some(format!("Composition {}", app.session.project.item(c)?.name))
+    Some(crate::i18n::tr_args("Composition {}", &[&app.session.project.item(c)?.name]))
 }
