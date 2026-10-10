@@ -27,7 +27,7 @@
 //!     on a large generated project (open, save, auto-save, undo/redo, timeline, Project panel)
 //! effectcraft-cli script FILE.jsx [F.ecproj] | --eval CODE    run an After Effects-style script
 //! effectcraft-cli replay SCRIPT.jsonl [--keep-going]        replay a repro script (docs/agents.md)
-//! effectcraft-cli mcp [--autosave | --bridge PORT | --ui]     MCP server on stdio
+//! effectcraft-cli mcp [--autosave | --bridge PORT | --ui] [--all-tools] MCP server on stdio
 //!
 //! Project:  --project F.ecproj (or a positional *.ecproj) | --demo | --empty   (default: demo; mcp: empty)
 //! Saving:   --save (back to --project) | --save-as F.ecproj
@@ -130,7 +130,9 @@ const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|se
   replay SCRIPT.jsonl [--keep-going]       replay a repro script headless (journal.export, crash repros):
                                            per-step ok/error and the first failure; exits 1 when a step
                                            fails, an expectation is not met or a command panics
-  mcp [--autosave | --bridge PORT | --ui]  MCP server (JSON-RPC over stdio); --autosave preserves unsaved headless work;
+  mcp [--autosave | --bridge PORT | --ui] [--all-tools]
+                                           MCP server (JSON-RPC over stdio); --autosave preserves unsaved
+                                           headless work; --all-tools also lists the older tool aliases;
                                            --ui [--ui-size 1680x1020] [--ui-scale 2] runs the app offscreen
                                            (no window) so screenshot and the ui_* tools work
       [--automation-read-root DIR] [--automation-write-root DIR]
@@ -215,6 +217,7 @@ const FLAGS: &[&str] = &[
     "--keep-going",
 
     "--ui",
+    "--all-tools",
 ];
 
 struct Args {
@@ -574,6 +577,9 @@ fn run(cmd: &str, args: &Args, json_out: bool) -> Result<(), Failure> {
     } else if args.opt("--ui-size").is_some() || args.opt("--ui-scale").is_some() {
         return usage_err("--ui-size and --ui-scale need --ui");
     }
+    if args.flag("--all-tools") && cmd != "mcp" {
+        return usage_err("--all-tools is only supported by mcp");
+    }
     match cmd {
         "render" => render(args, json_out)?,
         "bench" => bench_cmd(args)?,
@@ -750,7 +756,7 @@ fn run(cmd: &str, args: &Args, json_out: bool) -> Result<(), Failure> {
                 let roots = |r: Vec<&str>| r.into_iter().map(std::path::PathBuf::from).collect::<Vec<_>>();
                 b.confine(effectcraft_automation::confine::Confinement::new(&roots(read), &roots(write))?);
             }
-            let server = McpServer::new(b);
+            let server = McpServer::new(b).with_all_tools(args.flag("--all-tools"));
             let mut server = if args.flag("--autosave") {
                 let root =
                     effectcraft_host::config_dir().ok_or_else(|| Failure::Error("--autosave: no config directory; set EFFECTCRAFT_CONFIG_DIR".into()))?;
