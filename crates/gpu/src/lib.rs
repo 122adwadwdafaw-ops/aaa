@@ -55,6 +55,7 @@
 
 mod adv3d;
 mod bokeh;
+mod buffers;
 mod classic3d;
 mod context;
 pub mod deferred;
@@ -262,17 +263,25 @@ impl Gpu {
         }
     }
 
-    /// Run work in a native thread-local out-of-memory scope. A failed result is discarded
-    /// and cached allocations are released; callers can retry with a fresh CPU renderer.
+    /// Run work in a native thread-local error scope for allocation failures. A failed result
+    /// is discarded and cached allocations are released; callers can retry with a fresh CPU
+    /// renderer. A failed allocation is not always reported as out of memory (an integrated GPU
+    /// can fail `vkAllocateMemory` with `ERROR_INITIALIZATION_FAILED`, which surfaces as an
+    /// internal or validation error on the buffer, #591), so all three kinds count.
     /// Browser callers use the host/owned-device failure bridge and bounded readbacks instead
     /// of blocking their event loop on an error-scope future.
     pub fn within_memory<T>(&self, f: impl FnOnce() -> T) -> Result<T, String> {
         self.ctx.check_health()?;
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let scope = self.ctx.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let device = &self.ctx.device;
+            let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+            let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
             let out = f();
-            match pollster::block_on(scope.pop()) {
+            // Innermost first; every scope is popped even once one has reported.
+            let failed = [validation, internal, oom].into_iter().filter_map(|scope| pollster::block_on(scope.pop())).next();
+            match failed {
                 Some(e) => {
                     self.ctx.clear_uploads();
                     Err(e.to_string())

@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex, Weak};
 
 use effectcraft_effects::Buf;
 use effectcraft_raster::Image;
-use wgpu::util::DeviceExt;
 
 /// Compute entry points in `kernels.wgsl` (one pipeline each).
 const ENTRIES: &[&str] = &[
@@ -535,7 +534,7 @@ impl GpuContext {
             })
         })?;
         let dummy_buf = init_resource(&device, "dummy storage buffer", || {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("dummy"), contents: &[0u8; 16], usage: wgpu::BufferUsages::STORAGE })
+            crate::buffers::init(&device, &wgpu::util::BufferInitDescriptor { label: Some("dummy"), contents: &[0u8; 16], usage: wgpu::BufferUsages::STORAGE })
         })?;
         let dummy_tex = init_resource(&device, "dummy texture view", || dummy.create_view(&Default::default()))?;
         let max_dim = device.limits().max_texture_dimension_2d;
@@ -957,7 +956,7 @@ impl<'g> Enc<'g> {
             log::error!("gpu: no kernel {entry}");
             return;
         };
-        let ub = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: &p.bytes(), usage: wgpu::BufferUsages::UNIFORM });
+        let ub = crate::buffers::init(&g.device, &wgpu::util::BufferInitDescriptor { label: None, contents: &p.bytes(), usage: wgpu::BufferUsages::UNIFORM });
         let sv = src.texture.create_view(&Default::default());
         let av = aux.map(|a| a.texture.create_view(&Default::default()));
         let ov = out.texture.create_view(&Default::default());
@@ -1190,7 +1189,7 @@ impl<'g> Enc<'g> {
         while bytes.len() < 16 || !bytes.len().is_multiple_of(4) {
             bytes.push(0);
         }
-        self.g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("data"), contents: &bytes, usage: wgpu::BufferUsages::STORAGE })
+        crate::buffers::init(&self.g.device, &wgpu::util::BufferInitDescriptor { label: Some("data"), contents: &bytes, usage: wgpu::BufferUsages::STORAGE })
     }
 
     /// Convert to the viewer's premultiplied RGBA8 texture (egui-wgpu's native texture format),

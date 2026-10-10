@@ -738,6 +738,32 @@ fn devices_with_webgl2_limits_are_declined() {
     assert!(err.contains("max_storage_buffers_per_shader_stage") || err.contains("(Gl)"), "{err}");
 }
 
+/// A buffer the driver can't create (here: an empty usage, which wgpu rejects the same way a
+/// failed allocation is rejected) makes `create_buffer_init` panic. The guard reports it as an
+/// error instead, so the frame falls back to the CPU (#591).
+#[test]
+fn a_failed_buffer_creation_is_reported_not_a_panic() {
+    let Some(g) = gpu() else { return };
+    let bad = || {
+        crate::buffers::init(
+            &g.ctx.device,
+            &wgpu::util::BufferInitDescriptor { label: Some("bad"), contents: &[1, 2, 3, 4], usage: wgpu::BufferUsages::empty() },
+        )
+    };
+    assert!(g.within_memory(bad).is_err(), "an invalid buffer must fail the guarded work");
+    // A buffer that can be created still holds its contents and the context stays usable.
+    let ok = g
+        .within_memory(|| {
+            crate::buffers::init(
+                &g.ctx.device,
+                &wgpu::util::BufferInitDescriptor { label: Some("ok"), contents: &[1, 2, 3], usage: wgpu::BufferUsages::STORAGE },
+            )
+        })
+        .expect("a valid buffer");
+    assert_eq!(ok.size(), 4, "padded to the copy alignment");
+    assert!(g.ctx.check_health().is_ok());
+}
+
 /// GPU work inside the video memory guard returns its result when the device has room (#106).
 #[test]
 fn within_memory_returns_the_work_when_there_is_room() {
