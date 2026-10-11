@@ -309,6 +309,23 @@ page!(Scripting {
     error_banner: bool = true,
 });
 
+page!(
+    /// Window ▸ AI Chat: the panel's connections and prompt.
+    AiChatPrefs {
+        /// The local bridge (`bridge/agent-bridge.py` in the `effectcraft-ai-chat` repository):
+        /// hosts Codex, Devin over ACP, OpenCode and any CLI behind one local address.
+        bridge_url: String = "127.0.0.1:8765".into(),
+        /// A local Ollama server, for the direct connection.
+        ollama_url: String = "127.0.0.1:11434".into(),
+        /// The model the direct connection asks for (`aiChat.agent` = `ollama`).
+        model: String = "llama3.2:3b".into(),
+        /// The agent the panel starts on; `ollama` = the local model directly.
+        agent: String = "ollama".into(),
+        /// Sent as the first message of every conversation.
+        system_prompt: String = "You are the AI Chat panel inside EffectCraft, an open-source After Effects-style motion graphics app. Keep replies short, concrete and friendly. You cannot see the project yet; if asked to change it, say what you would do.".into(),
+    }
+);
+
 impl Scripting {
     /// Whether `other` grants scripts the same as this: Application Scripting (file and network
     /// access, the warning before executing files, the debugger). Scripts can't change these
@@ -378,6 +395,7 @@ pub struct Prefs {
     #[serde(rename = "threeD")]
     pub three_d: ThreeD,
     pub scripting: Scripting,
+    pub ai_chat: AiChatPrefs,
     pub roto: RotoPrefs,
     pub face: FacePrefs,
     /// File ▸ Open Recent, newest first.
@@ -420,6 +438,7 @@ impl Default for Prefs {
             video: Video::default(),
             three_d: ThreeD::default(),
             scripting: Scripting::default(),
+            ai_chat: AiChatPrefs::default(),
             roto: RotoPrefs::default(),
             face: FacePrefs::default(),
             recent_projects: vec![],
@@ -930,6 +949,7 @@ pub fn section_key(page: &str) -> Option<&'static str> {
         "scripting" => "scripting",
         "roto" => "roto",
         "face" => "face",
+        "aiChat" => "aiChat",
         _ => return None,
     })
 }
@@ -956,6 +976,7 @@ pub fn page_id(name: &str) -> Option<&'static str> {
         "video" | "videopreview" => "video",
         "3d" | "threed" => "3d",
         "scripting" | "scriptingexpressions" => "scripting",
+        "aichat" => "aiChat",
         "roto" | "rotobrush" | "models" => "roto",
         "face" | "facetracking" => "face",
         _ => return None,
@@ -1334,6 +1355,22 @@ pub fn pages() -> Vec<Page> {
                 s("scripting.wordWrap", "Word Wrap", B, true),
                 s("scripting.errorBanner", "Show Expression Error Banner", B, true),
                 Note("Expressions use the JavaScript engine. Script errors report their file and line in the Script Console; there is no step debugger."),
+            ],
+        },
+        Page {
+            id: "aiChat",
+            title: "AI Chat",
+            items: vec![
+                Section("Connection"),
+                s("aiChat.bridgeUrl", "Bridge URL", Kind::Text, true),
+                s("aiChat.ollamaUrl", "Ollama URL", Kind::Text, true),
+                s("aiChat.model", "Model", Kind::Text, true),
+                s("aiChat.agent", "Default Agent", Kind::Text, true),
+                Section("Prompt"),
+                s("aiChat.systemPrompt", "System Prompt", Kind::Text, true),
+                Note(
+                    "Window ▸ AI Chat talks to local servers only: Ollama directly, or the bridge (bridge/agent-bridge.py) for Codex, Devin over ACP, OpenCode and any CLI. Requests run on a worker thread.",
+                ),
             ],
         },
         Page {

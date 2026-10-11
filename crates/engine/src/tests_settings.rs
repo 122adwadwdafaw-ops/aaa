@@ -215,6 +215,19 @@ fn prefs_commands_get_set_reset_and_persist() {
 }
 
 #[test]
+fn ai_chat_settings_default_and_reset() {
+    let store = Arc::new(MemoryConfig::default());
+    let mut s = Session { config: Some(store), ..Default::default() };
+    assert_eq!(s.prefs.get("aiChat.bridgeUrl"), Some(json!("127.0.0.1:8765")));
+    s.execute("prefs.set", json!({"key": "aiChat.agent", "value": "codex"})).unwrap();
+    assert_eq!(s.prefs.ai_chat.agent, "codex");
+    s.execute("prefs.set", json!({"key": "aiChat.systemPrompt", "value": "Be brief."})).unwrap();
+    s.prefs.reset(Some("aiChat")).unwrap();
+    assert_eq!(s.prefs.ai_chat, crate::prefs::AiChatPrefs::default());
+    assert!(s.execute("prefs.open", json!({"page": "AI Chat"})).is_ok());
+}
+
+#[test]
 fn undo_levels_are_honoured() {
     let mut s = session_with_comp();
     s.execute("prefs.set", json!({"key": "general.undoLevels", "value": 3})).unwrap();

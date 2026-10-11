@@ -223,3 +223,20 @@ checkpoint after a client restart.
 
 Commands: `file.autoSave` (now), `file.recoveryInfo`, `file.openRecent {index? | path?}`,
 `file.clearRecent`, `file.revert`, `file.incrementAndSave`.
+
+## AI Chat
+
+Window ▸ AI Chat (Settings ▸ AI Chat) chats with a local model or with anything the local bridge
+exposes. The panel reaches `127.0.0.1` only: Ollama directly, or `bridge/agent-bridge.py` (the
+`effectcraft-ai-chat` repository) for Codex on a ChatGPT plan, Devin over ACP, OpenCode,
+OpenAI-compatible APIs and any CLI. Requests run on a worker thread, so the interface keeps
+drawing while a model thinks. The transcript, the conversation and the agent list live in the UI
+state, so agents can read them like any other panel.
+
+| Key | What |
+|---|---|
+| `aiChat.bridgeUrl` | the bridge to talk to (`127.0.0.1:8765`) |
+| `aiChat.ollamaUrl` | the Ollama server for the direct connection (`127.0.0.1:11434`) |
+| `aiChat.model` | the model the direct connection asks for |
+| `aiChat.agent` | the agent the panel starts on (`ollama` = the local model directly) |
+| `aiChat.systemPrompt` | the first message of every conversation |
