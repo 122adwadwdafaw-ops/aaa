@@ -1182,6 +1182,7 @@ name = "effectcraft-av1enc"
 version = "0.8.0"
 dependencies = [
  "filmcraft-av1",
+ "rayon",
 ]
 
 [[package]]
@@ -1340,6 +1341,7 @@ name = "effectcraft-hevcenc"
 version = "0.8.0"
 dependencies = [
  "filmcraft-hevc",
+ "rayon",
 ]
 
 [[package]]
@@ -1650,6 +1652,10 @@ dependencies = [
 [[package]]
 name = "effectcraft-vp9enc"
 version = "0.8.0"
+dependencies = [
+ "filmcraft-vp9",
+ "rayon",
+]
 
 [[package]]
 name = "effectcraft-web"
