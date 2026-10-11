@@ -69,6 +69,25 @@ pub(crate) fn bar_color(label: Color32, selected: bool) -> Color32 {
     Color32::from_rgb(mix(label.r()), mix(label.g()), mix(label.b()))
 }
 
+/// How far a layer bar's trim zones reach past its ends and into it, in points. After Effects'
+/// zones straddle each end, so the pointer needn't land inside the bar.
+const TRIM_OUTSIDE: f32 = 4.0;
+const TRIM_INSIDE: f32 = 5.0;
+
+/// A layer bar's body (drag to move) and its In/Out trim zones. Short bars keep their middle
+/// third as body; a bar too short for that is all trim zones (the Out one on top).
+fn trim_zones(bar: Rect) -> (Rect, Rect, Rect) {
+    let inside = TRIM_INSIDE.min(bar.width() / 3.0).max(0.0);
+    let in_r = Rect::from_min_max(pos2(bar.min.x - TRIM_OUTSIDE, bar.min.y), pos2(bar.min.x + inside, bar.max.y));
+    let out_r = Rect::from_min_max(pos2(bar.max.x - inside, bar.min.y), pos2(bar.max.x + TRIM_OUTSIDE, bar.max.y));
+    (bar.shrink2(vec2(inside, 0.0)), in_r, out_r)
+}
+
+/// The trim cursor over a layer bar's ends: the horizontal resize arrow.
+fn trim_cursor(ctx: &egui::Context) {
+    ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+}
+
 /// Darken part `r` of a layer bar and stripe it diagonally in its label colour (where the layer
 /// runs past its source). Only the visible part is drawn.
 fn stripes(p: &egui::Painter, r: Rect, label: Color32) {
@@ -498,15 +517,18 @@ const GUTTER_W: f32 = 18.0;
 /// The most a time ruler zooms in (pixels per second).
 const MAX_PPS: f64 = 4000.0;
 
+/// One `=` / `-` step (and one click on the footer's zoom buttons).
+pub(crate) const ZOOM_STEP: f64 = 1.5;
+
 /// Pixels per second that fit `comp` in a time graph `width` points wide.
-fn fit_pps(width: f32, comp: &Comp) -> f64 {
+pub(crate) fn fit_pps(width: f32, comp: &Comp) -> f64 {
     (width - 10.0).max(1.0) as f64 / comp.duration.seconds().max(0.01)
 }
 
 /// Zoom the time ruler to `pps` pixels per second, keeping comp time `at_t` at `at_px` pixels
 /// from the ruler's start. Zooming out stops at `fit`, where the whole comp shows (and the
 /// ruler keeps fitting it).
-fn set_zoom(tl: &mut crate::state::TimelineState, comp: &Comp, pps: f64, fit: f64, at_t: f64, at_px: f64) {
+pub(crate) fn set_zoom(tl: &mut crate::state::TimelineState, comp: &Comp, pps: f64, fit: f64, at_t: f64, at_px: f64) {
     let npps = pps.min(MAX_PPS.max(fit)).max(fit);
     if npps <= fit {
         tl.pps = None;
@@ -1268,6 +1290,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let span = ((graph_x1 - graph_x0 - 6.0) as f64 / pps).max(0.0);
         app.ui.timeline.start = page_to_cti(app.ui.timeline.start, span, comp.duration.seconds(), app.session.time().seconds());
     }
+    // As in After Effects, the ruler never scrolls past the comp's end: zoomed in, the last
+    // visible time is at most the comp duration.
+    let visible_secs = ((graph_x1 - graph_x0 - 6.0).max(1.0) as f64 / pps.max(1e-6)).max(0.0);
+    let max_start = (comp.duration.seconds() - visible_secs).max(0.0);
+    app.ui.timeline.start = app.ui.timeline.start.clamp(0.0, max_start);
     let tm = TMap { x0: graph_x0 + 6.0, start: app.ui.timeline.start, pps };
     ctx.data_mut(|d| d.insert_temp(tl_map_id(), (tm.x0, tm.start, tm.pps)));
     let top = rect.min.y;
@@ -1518,7 +1545,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         } else {
             format!("{:02}:{:02}f", fno / fps_i, fno % fps_i)
         };
-        pr.text(pos2(x + 3.0, ruler.max.y - 16.0), Align2::LEFT_CENTER, label, Tokens::ui(10.0), t.tl_ruler_text);
+        // A label that would run under the marker bin is left out rather than cut to a stray digit.
+        let g = pr.layout_no_wrap(label, Tokens::ui(10.0), t.tl_ruler_text);
+        if x + 3.0 + g.size().x <= bin.min.x {
+            pr.galley(pos2(x + 3.0, ruler.max.y - 16.0 - g.size().y / 2.0), g, t.tl_ruler_text);
+        }
         for k in 1..5 {
             let xx = tm.x(s + secs_per_label * k as f64 / 5.0);
             pr.line_segment([pos2(xx, ruler.max.y - 4.0), pos2(xx, ruler.max.y)], Stroke::new(1.0, t.tl_ruler_tick.gamma_multiply(0.6)));
@@ -1558,6 +1589,17 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let tt = Tick::from_seconds_f64(secs);
         app.session.set_time(tt);
         app.stop();
+        // Dragged past either edge of the ruler (over the layer outline, say), the view scrolls so
+        // the current time indicator stays in sight (After Effects).
+        if app.ui.timeline.pps.is_some() {
+            let now = app.session.time().seconds();
+            let span = tm.t(bin.min.x) - tm.start;
+            if now < tm.start {
+                app.ui.timeline.start = now.max(0.0);
+            } else if now > tm.start + span {
+                app.ui.timeline.start = (now - span).max(0.0);
+            }
+        }
         // Ctrl/Cmd-drag scrubs the audio too (After Effects).
         if rresp.dragged()
             && ui.input(|i| i.modifiers.command)
@@ -1727,6 +1769,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut ui_actions: Vec<UiAct> = Vec::new();
     let idx_of = |id: LayerId| comp.index_of(id).unwrap_or(0);
     let graph_on = app.ui.timeline.graph_editor;
+    super::graph::track_open(ui.ctx(), graph_on);
     let full_clip = ui.clip_rect();
     let left_clip = full_clip.intersect(Rect::from_min_max(pos2(rect.min.x, rows_rect.min.y), pos2(graph_x0 - 1.0, rows_rect.max.y)));
     let right_clip = full_clip.intersect(Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max));
@@ -2045,8 +2088,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                 continue;
                             }
                             let gresp = ui
-                                .interact(gr, egui::Id::new(("ghost", side, layer.id.0)), Sense::drag())
+                                .interact(gr, egui::Id::new(("ghost", side, layer.id.0)), Sense::click_and_drag())
                                 .on_hover_text(crate::i18n::tr("Drag to slip the source"));
+                            // Outside the bar it is empty track area: a plain click deselects.
+                            if gresp.clicked() && !ui.input(|i| i.modifiers.shift || i.modifiers.command) {
+                                actions.push(("layer.select".into(), json!({"layers": []})));
+                            }
                             app.auto.add(&format!("timeline.layer.{}.source{}", layer.id.0, side), gr, "Slip");
                             if gresp.hovered() || gresp.dragged() {
                                 ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
@@ -2073,16 +2120,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                     app.auto.add(&format!("timeline.layer.{}.bar", layer.id.0), bar, &layer.name);
                     // Interactions: move body, trim edges.
-                    let edge_w = 6.0;
-                    let body = ui.interact(bar.shrink2(vec2(edge_w, 0.0)), egui::Id::new(("bar", layer.id.0)), Sense::click_and_drag());
-                    let (in_r, out_r) =
-                        (Rect::from_min_max(bar.min, pos2(bar.min.x + edge_w, bar.max.y)), Rect::from_min_max(pos2(bar.max.x - edge_w, bar.min.y), bar.max));
+                    let (body_r, in_r, out_r) = trim_zones(bar);
+                    let body = ui.interact(body_r, egui::Id::new(("bar", layer.id.0)), Sense::click_and_drag());
                     let lin = ui.interact(in_r, egui::Id::new(("bar-in", layer.id.0)), Sense::drag());
                     let lout = ui.interact(out_r, egui::Id::new(("bar-out", layer.id.0)), Sense::drag());
                     app.auto.add(&format!("timeline.layer.{}.bar.in", layer.id.0), in_r, "Trim In");
                     app.auto.add(&format!("timeline.layer.{}.bar.out", layer.id.0), out_r, "Trim Out");
                     if lin.hovered() || lout.hovered() || lin.dragged() || lout.dragged() {
-                        ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                        trim_cursor(&ctx);
                     }
                     let shift = ui.input(|i| i.modifiers.shift);
                     if let Some(layers) = (body.clicked() && shift).then(|| shift_range(&ctx, cid, &comp, &rows, &selected, layer.id)).flatten() {
@@ -2108,14 +2153,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             if frames != 0 {
                                 acc -= (frames as f64 * fd * pps) as f32;
                                 let d = frames as f64 * fd;
+                                // A selected layer's bar moves or trims every selected layer by the
+                                // same amount (each within its own limits), as in After Effects.
+                                let layers = if is_sel { json!(selected.iter().map(|l| l.0).collect::<Vec<_>>()) } else { json!([layer.id.0]) };
                                 let params = match kind {
-                                    "move" => {
-                                        json!({"layers": if is_sel { json!(selected.iter().map(|l| l.0).collect::<Vec<_>>()) } else { json!([layer.id.0]) }, "delta": d, "merge": drag_key})
-                                    }
-                                    "in" => json!({"layers": [layer.id.0], "in": (layer.in_point.seconds() + d).max(0.0), "merge": drag_key}),
-                                    _ => {
-                                        json!({"layers": [layer.id.0], "out": (layer.out_point.seconds() + d).min(comp.duration.seconds()), "merge": drag_key})
-                                    }
+                                    "move" => json!({"layers": layers, "delta": d, "merge": drag_key}),
+                                    "in" => json!({"layers": layers, "inDelta": d, "merge": drag_key}),
+                                    _ => json!({"layers": layers, "outDelta": d, "merge": drag_key}),
                                 };
                                 actions.push(("layer.timing".into(), params));
                             }
@@ -2188,6 +2232,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 dash_buttons(app, ui, &lp, layer, *uid, cw.switches, cy, &mut actions);
+                direction_button(app, ui, &lp, layer, *uid, cw.switches, cy, &mut actions);
                 // Mask mode + inverted inline.
                 if let Some(g) = layer.props.find_group(*uid)
                     && let GroupKind::Mask { mode, inverted, .. } = g.kind
@@ -2776,14 +2821,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if graph_on {
         super::graph::show(app, ui, &gp, &comp, &ectx, tm, Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max), &mut actions);
     }
-    // Empty-area click in the graph: deselect keys (below the last row, the layers too, as in
-    // After Effects); drag: box-select keys.
-    if empty.clicked() {
-        actions.push(("keys.select".into(), json!({"keys": []})));
-        let below = empty.interact_pointer_pos().is_some_and(|p| hit_rows.iter().all(|(r, _)| p.y > r.max.y));
-        if below && !ui.input(|i| i.modifiers.shift || i.modifiers.command) {
-            actions.push(("layer.select".into(), json!({"layers": []})));
-        }
+    // A plain click on empty track area (beside a layer's bar, on a property row's empty span or
+    // below the last row) deselects the layers and their keys and properties, as in After
+    // Effects; Shift / Cmd keep the selection. Drag: box-select keys.
+    if empty.clicked() && !ui.input(|i| i.modifiers.shift || i.modifiers.command) {
+        actions.push(("layer.select".into(), json!({"layers": []})));
     }
     if let (true, Some(origin), Some(cur)) =
         (empty.dragged(), empty.interact_pointer_pos().and_then(|_| ctx.input(|i| i.pointer.press_origin())), empty.interact_pointer_pos())
@@ -2889,7 +2931,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
         }
-        actions.push(("keys.select".into(), json!({"keys": keys, "add": ui.input(|i| i.modifiers.shift), "selectProperties": true})));
+        let mods = ui.input(|i| i.modifiers);
+        if keys.is_empty() && !(mods.shift || mods.command) {
+            // A marquee that catches nothing leaves nothing selected (layers included).
+            actions.push(("layer.select".into(), json!({"layers": []})));
+        } else {
+            actions.push(("keys.select".into(), json!({"keys": keys, "add": mods.shift, "selectProperties": true})));
+        }
     }
 
     // CTI.
@@ -2945,24 +2993,35 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     );
     // Zoom slider.
     let zs = Rect::from_min_max(pos2(graph_x0 + 30.0, footer.center().y - 2.0), pos2((graph_x0 + 230.0).min(rect.max.x - 30.0), footer.center().y + 2.0));
-    icons::paint(&p, Rect::from_center_size(pos2(zs.min.x - 14.0, footer.center().y), vec2(14.0, 14.0)), Icon::MountainSmall, t.text_dim);
-    icons::paint(&p, Rect::from_center_size(pos2(zs.max.x + 14.0, footer.center().y), vec2(16.0, 16.0)), Icon::MountainLarge, t.text_dim);
+    // Zoom out / zoom in buttons either side of the slider: the `-` / `=` steps. Everything here
+    // zooms around the CTI and sets the one time zoom the layer bars and the Graph Editor share.
+    let cti = time.seconds();
+    let cti_px = (cti - tm.start) * pps;
+    for (icon, size, cx, id, tip, k) in [
+        (Icon::MountainSmall, 14.0, zs.min.x - 14.0, "timeline.zoomOutButton", "Zoom Out (Time)", 1.0 / ZOOM_STEP),
+        (Icon::MountainLarge, 16.0, zs.max.x + 14.0, "timeline.zoomInButton", "Zoom In (Time)", ZOOM_STEP),
+    ] {
+        let r = Rect::from_center_size(pos2(cx, footer.center().y), vec2(20.0, 20.0));
+        let resp = ui.interact(r, egui::Id::new(id), Sense::click()).on_hover_text(crate::i18n::tr(tip));
+        icons::paint(&p, Rect::from_center_size(r.center(), vec2(size, size)), icon, if resp.hovered() { t.text } else { t.text_dim });
+        app.auto.add(id, r, tip);
+        if resp.clicked() {
+            set_zoom(&mut app.ui.timeline, &comp, pps * k, fit_pps, cti, cti_px);
+        }
+    }
     p.rect_filled(zs, 2.0, t.field_bg);
-    let maxpps = MAX_PPS;
+    let maxpps = MAX_PPS.max(fit_pps * 1.001);
     let frac = ((pps / fit_pps).ln() / (maxpps / fit_pps).ln()).clamp(0.0, 1.0) as f32;
     let knob = pos2(zs.min.x + zs.width() * frac, zs.center().y);
     p.circle_filled(knob, 6.0, t.text);
-    let zresp = ui.interact(zs.expand2(vec2(6.0, 8.0)), egui::Id::new("tl-zoom"), Sense::drag());
+    // Drag the knob, or click the track to jump there.
+    let zresp = ui.interact(zs.expand2(vec2(6.0, 8.0)), egui::Id::new("tl-zoom"), Sense::click_and_drag());
     app.auto.add("timeline.zoomSlider", zs, "Zoom");
-    if zresp.dragged()
+    if (zresp.dragged() || zresp.clicked())
         && let Some(pt) = zresp.interact_pointer_pos()
     {
-        let f = ((pt.x - zs.min.x) / zs.width()).clamp(0.0, 1.0) as f64;
-        let npps = fit_pps * (maxpps / fit_pps).powf(f);
-        let cti = time.seconds();
-        let rel = (cti - tm.start) * pps;
-        app.ui.timeline.start = (cti - rel / npps).max(0.0);
-        app.ui.timeline.pps = Some(npps);
+        let f = ((pt.x - zs.min.x) / zs.width().max(1.0)).clamp(0.0, 1.0) as f64;
+        set_zoom(&mut app.ui.timeline, &comp, fit_pps * (maxpps / fit_pps).powf(f), fit_pps, cti, cti_px);
     }
 
     // Composition markers in the ruler; protected regions shade the layer rows.
@@ -3239,6 +3298,46 @@ fn dash_buttons(
         if resp.clicked() {
             actions.push((id.into(), json!({"layer": layer.id.0, "prop": stroke})));
         }
+    }
+}
+
+/// Reverse Path Direction On/Off (⇄) on a Path / Rectangle / Ellipse / Polystar row, as in After
+/// Effects: lit while the path runs the other way (Trim Paths then trims from the other end).
+#[allow(clippy::too_many_arguments)]
+fn direction_button(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    layer: &Layer,
+    uid: u64,
+    x: f32,
+    cy: f32,
+    actions: &mut Vec<(String, serde_json::Value)>,
+) {
+    if !matches!(layer.source, LayerSource::Shape) {
+        return;
+    }
+    let Some(g) = layer.props.find_group(uid).filter(|g| matches!(g.match_id.as_str(), "rect" | "ellipse" | "star" | "path")) else { return };
+    let on = g.get("direction").is_some_and(|d| d.value == effectcraft_engine::keyframe::Value::Enum(1));
+    let t = app.tokens;
+    let tip = if on { "Reverse Path Direction On" } else { "Reverse Path Direction Off" };
+    let r = Rect::from_center_size(pos2(x + 12.0, cy), vec2(18.0, 16.0));
+    let resp = ui.interact(r, egui::Id::new(("tl-path-dir", uid)), Sense::click()).on_hover_text(crate::i18n::tr(tip));
+    if on {
+        p.rect_filled(r.shrink(1.0), 2.0, t.accent.gamma_multiply(0.35));
+    }
+    p.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(1.0, if on { t.accent } else { t.separator }), StrokeKind::Inside);
+    // ⇄: a right arrow over a left arrow (drawn, not a font glyph).
+    let c = if on || resp.hovered() { t.text } else { t.text_dim };
+    let s = Stroke::new(1.2, c);
+    let (l, rr, y1, y2) = (r.min.x + 4.5, r.max.x - 4.5, cy - 2.5, cy + 2.5);
+    p.line_segment([pos2(l, y1), pos2(rr, y1)], s);
+    p.line_segment([pos2(rr - 2.5, y1 - 2.5), pos2(rr, y1)], s);
+    p.line_segment([pos2(l, y2), pos2(rr, y2)], s);
+    p.line_segment([pos2(l + 2.5, y2 + 2.5), pos2(l, y2)], s);
+    app.auto.add(&format!("timeline.group.{uid}.reversePath"), r, tip);
+    if resp.clicked() {
+        actions.push(("shape.reversePathDirection".into(), json!({"layer": layer.id.0, "prop": uid})));
     }
 }
 

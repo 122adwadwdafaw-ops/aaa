@@ -216,6 +216,7 @@ fn new_shape(s: &mut Session, p: &Value) -> Result<Value> {
         .unwrap_or([300.0, 300.0]);
     // A fill, and a stroke only with a width (not the Tools bar's paint).
     let paint = super::shape_tool::paint_p(p, &Default::default(), "layer.newShape")?;
+    let round = super::shape_tool::roundness_p(p, &kind, "layer.newShape")?;
     let pos = p
         .get("position")
         .and_then(|v| v.as_array())
@@ -226,7 +227,8 @@ fn new_shape(s: &mut Session, p: &Value) -> Result<Value> {
         let mut next = proj.next_id;
         let g = super::shape_tool::shape_group(&mut Ids(&mut next), &kind, size, &paint);
         proj.next_id = next;
-        if let Some(g) = g {
+        if let Some(mut g) = g {
+            super::shape_tool::set_roundness(&mut g, round);
             super::shape_tool::add_to_contents(proj, cid, lid, g, [0.0, 0.0], "layer.newShape")?;
         }
         Ok(lid)
@@ -857,10 +859,21 @@ fn timing(s: &mut Session, p: &Value) -> Result<Value> {
     let fr = s.project.comp(cid).ok_or(EngineError::NoComp)?.frame_rate;
     let snap = |k: &str| f_p(p, k).map(|v| fr.snap_nearest(Tick::from_seconds_f64(v)));
     let (delta, start, inp, outp) = (snap("delta"), snap("start"), snap("in"), snap("out"));
+    // `inDelta` / `outDelta`: move each layer's In / Out point by the same amount (the Timeline's
+    // trim drag, which trims every selected layer as in After Effects), each layer within its own
+    // limits: the comp's start / end (unless already past it) and its other end.
+    let (in_delta, out_delta) = (snap("inDelta"), snap("outDelta"));
     s.edit("Layer Timing", merge_p(p), |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         let fd = comp.frame_duration();
+        let dur = comp.duration;
         for l in comp.layers.iter_mut().filter(|l| ids.contains(&l.id)) {
+            if let Some(d) = in_delta {
+                l.in_point = (l.in_point + d).max(Tick::ZERO.min(l.in_point)).min(l.out_point - fd);
+            }
+            if let Some(d) = out_delta {
+                l.out_point = (l.out_point + d).min(dur.max(l.out_point)).max(l.in_point + fd);
+            }
             let shift = |l: &mut Layer, d: Tick| {
                 l.start_time += d;
                 l.in_point += d;
@@ -1477,7 +1490,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Shape Layer",
             ["Layer", "New"],
             None,
-            "{kind?: rect|rounded|ellipse|star|polygon|none, name?, size?, fill?, fillType?, fillBlend?, fillOpacity?, stroke?, strokeType?, strokeBlend?, strokeOpacity?, strokeWidth?, position?}",
+            "{kind?: rect|rounded|ellipse|star|polygon|none, name?, size?, roundness? px (rect/rounded), fill?, fillType?, fillBlend?, fillOpacity?, stroke?, strokeType?, strokeBlend?, strokeOpacity?, strokeWidth?, position?}",
             has_comp,
             new_shape
         ),
@@ -1530,7 +1543,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Layer Timing",
             [],
             None,
-            "{layers?, op?: moveInToTime|moveOutToTime|trimInToTime|trimOutToTime, delta?, start?, in?, out?, merge?}",
+            "{layers?, op?: moveInToTime|moveOutToTime|trimInToTime|trimOutToTime, delta?, start?, in?, out?, inDelta?, outDelta? (trim each layer's In / Out by seconds), merge?}",
             has_layers,
             timing
         ),

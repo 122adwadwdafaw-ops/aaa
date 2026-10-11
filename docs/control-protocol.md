@@ -34,7 +34,7 @@ printf '{"id":1,"method":"engine.execute","params":{"command":"comp.new","params
 |---|---|---|
 | `engine.execute` | `{command, params?}` | The command's result. Every engine command (`effectcraft-cli commands`) runs exactly as it does headless, so it never opens a dialog: `comp.new {}` creates a default comp. UI-only ids (`tool.*`, `view.*`, `window.*`, `playback.*`, `timeline.*`, `app.*`) fall through to the menu dispatcher. Unknown top-level params are rejected, and the error lists the accepted keys. |
 | `ui.menu.invoke` | `{id, params?}` | Like a menu click: commands with empty params may open their dialog (New Composition, Solid Settings, file pickers). |
-| UI commands (via either) | | `timeline.column {column, visible?}` (av, keys, label, num, comment, switches, modes, parent, in, out, duration, stretch), `timeline.sourceName {value?}`, `timeline.search {query}`, `timeline.reveal.<kind>` / `timeline.revealAdd.<kind>` (the property shortcuts and Shift+shortcut: position, scale, rotation, opacity, anchor, effects, masks, feather, levels, animated, and the double-press sets maskPath, maskOpacity, timeRemap, expressions, material, paint, selected, missingEffects, waveform), `timeline.keyAt.<anchor\|position\|scale\|rotation\|opacity>` (Alt+Shift+A/P/S/R/T), `timeline.twirlSelected` (Ctrl/Cmd+`), `timeline.collapseAll`, `flowchart.options {layers?, effects?, solids?, direction?: lr\|tb, comp?}`, `flowchart.graph {comp?}` → `{nodes, edges}`, `window.workspace {name}` (all After Effects workspaces). |
+| UI commands (via either) | | `timeline.column {column, visible?}` (av, keys, label, num, comment, switches, modes, parent, in, out, duration, stretch), `timeline.sourceName {value?}`, `timeline.search {query}`, `timeline.reveal.<kind>` / `timeline.revealAdd.<kind>` (the property shortcuts and Shift+shortcut: position, scale, rotation, opacity, anchor, effects, masks, feather, levels, animated, and the double-press sets maskPath, maskOpacity, timeRemap, expressions, material, paint, selected, missingEffects, waveform), `timeline.keyAt.<anchor\|position\|scale\|rotation\|opacity>` (Alt+Shift+A/P/S/R/T), `timeline.twirlSelected` (Ctrl/Cmd+`), `timeline.collapseAll`, `flowchart.options {layers?, effects?, solids?, direction?: lr\|tb, comp?}`, `flowchart.graph {comp?}` → `{nodes, edges}`, `window.workspace {name}` (all After Effects workspaces), `app.fxConsole {query?}` (Edit ▸ Effect Console, Ctrl+Space: a search bar at the pointer, `fxConsole.search`, results `fxConsole.result.<i>`; Enter applies the effect or preset to the selected layers). |
 | `engine.commands` | `{filter?, enabledOnly?}` | `[{id, label, menu, shortcut, params, enabled, why}]` |
 | `ui.menu.list` | `{}` | The menu tree with enablement. |
 | `render.frame` | `{comp?, time?, max_side?, path?, base64?}` | Renders a comp frame through the session, independent of the viewer zoom or resolution. `comp` is an id or name (default: the active comp), `time` is in comp seconds (default: the CTI), `max_side` caps the longest side (0 = full size). Writes a PNG to `path` (default: a temp file) and returns `{comp, time, width, height, path}`. With `base64: true` it returns `{…, png: "<base64>"}` and writes no file. |
@@ -97,6 +97,13 @@ Points are logical window coordinates. A target is `{id}` (the element's centre;
 | `ui.key` | `{key}`, for example `Space`, `F9`, `Cmd+Z`, `Cmd+Shift+Z`, `PageDown`, `Escape` |
 | `ui.type` | `{text}`: text input into the focused field |
 
+Shortcut presets also accept `Physical+<shortcut>` for a keyboard position, using egui's
+US-position names (for example `Physical+6` and `Physical+Minus` distinguish AZERTY's
+`-` and `)` keys). Physical bindings take precedence over logical bindings for that key
+press. `ui.key` accepts the same notation to test them. Ordinary shortcuts remain layout-aware.
+`time.workAreaStart` and `time.workAreaEnd` navigate to the first and last included work-area
+frames and can be assigned through `shortcuts.set`.
+
 ## Locating things
 
 | Method | Params | Result |
@@ -120,7 +127,11 @@ renames it), `viewer.comp`, `viewer.handle.<layer>.<i>`,
 Enter or a double-click renames, drag reorders), `timeline.prop.<uid>.stopwatch`,
 `timeline.key.<uid>.<frame>`, `timeline.cti`, `effectControls.prop.<uid>.value` (an angle's
 revolutions are `timeline.prop.<uid>.revolutions`, `effectControls.prop.<uid>.revolutions` and
-`properties.prop.<uid>.revolutions`) and `effects.item.<name>`. The Composition viewer adds `viewer.magnification`, `viewer.resolution`,
+`properties.prop.<uid>.revolutions`), the Properties panel's shape rows
+`properties.shape.<key>[.value[.0|.1]|.stopwatch|.prevKey|.keyKey|.nextKey]` for the first shape group and
+`properties.shape.<n>.<key>` for the n-th (`size`, `roundness`, `ellipseSize`, `points`,
+`outerRadius`, `innerRadius`, `outerRoundness`, `innerRoundness`, `fillColor`, `fillOpacity`,
+`strokeColor`, `strokeWidth`), a solid's `properties.solid.roundness`, and `effects.item.<name>`. The Composition viewer adds `viewer.magnification`, `viewer.resolution`,
 `viewer.roi`, `viewer.grid`, `viewer.channel`, `viewer.exposure`, `viewer.snapshot`,
 `viewer.showSnapshot`, `viewer.fastPreviews` (their popup entries are `viewer.<menu>Item.<n>`),
 `viewer.ruler.top|left|origin`, `viewer.mask.<uid>.vertex.<i>`, `viewer.shapePath.<uid>.vertex.<i>`,
@@ -136,7 +147,13 @@ Compositions and Text Layers), `view.channel {channel, colorized?}`,
 `view.exposure {stops | delta}`, `view.resetExposure`, `view.takeSnapshot`, `view.showSnapshot`,
 `view.fastPreviewMode {mode}`, `view.setRegionOfInterest {rect}`, `view.addGuide`,
 `view.moveGuide`, `view.removeGuide`; editing: `shape.newPath` (Pen on shape layers),
-`shape.newShape` (the shape tools: a new group in the selected shape layer, else a new shape layer),
+`shape.newShape` (the shape tools: a new group in the selected shape layer, else a new shape layer;
+`roundness` px rounds a rect's corners), `layer.roundCorners {layer?|layers?, roundness?}` (Layer ›
+Create › Round Corners and the Properties panel's Roundness: sets the Roundness of a shape layer's
+Rectangle Paths; a solid becomes, in one undo step, a shape layer drawing a rectangle of its size
+and colour that keeps its id, name, timing, transform, switches, masks, styles and markers, and
+renders the same at roundness 0; solids with effects, adjustment layers and other solids that
+could not render the same are refused with the reason),
 `shape.toolOptions` (the Tools bar's Tool Creates Shape / Mask and Fill and Stroke Options),
 `mask.insertVertex`, `mask.convertVertex`, `mask.deleteVertices`, `path.freeTransform` (masks and
 shape paths by uid), `keys.setSpatialTangents` (motion-path handles) and `keys.transform` (Graph

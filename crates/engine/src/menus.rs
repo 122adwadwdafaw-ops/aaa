@@ -525,6 +525,7 @@ File
     File... | file.import
     Multiple Files... | file.importMultiple
     Adobe Premiere Pro Project... | file.importTimeline
+    EffectCraft Project... | file.importProject
     Placeholder... | file.importPlaceholder
     Solid... | file.importSolid
     Lottie... | file.importLottie
@@ -592,6 +593,7 @@ Edit
     @dynamic:history
   ---
   Quick Apply... | app.commandPalette
+  Effect Console... | app.fxConsole
   ---
   Cut | edit.cut
   Copy | edit.copy
@@ -921,6 +923,7 @@ Layer
     Create Shapes from Text | layer.create {"op":"shapesFromText"}
     Create Masks from Text | layer.create {"op":"masksFromText"}
     Create Shapes from Vector Layer | layer.create {"op":"shapesFromVector"}
+    Round Corners | layer.roundCorners
     Create Keyframes from Data | layer.create {"op":"keyframesFromData"}
     Null Controllers for Positional Points | layer.create {"op":"nullsPositional"}
     Null Controllers for Path Points | layer.create {"op":"nullsPathPoints"}

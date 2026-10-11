@@ -15,6 +15,7 @@ pub mod camera_track;
 pub mod commands;
 pub mod config;
 pub mod demo;
+pub mod figma;
 pub mod footage_check;
 pub mod footage_reload;
 pub mod guard;
@@ -1067,6 +1068,8 @@ mod tests_face;
 mod tests_fidelity;
 #[cfg(test)]
 mod tests_frame_export;
+#[cfg(test)]
+mod tests_import_project;
 #[cfg(test)]
 mod tests_key_metadata_order;
 #[cfg(test)]
