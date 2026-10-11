@@ -46,9 +46,9 @@
 
 use std::io::Write;
 
-mod template;
 #[cfg(feature = "ui")]
 mod offscreen_ui;
+mod template;
 
 use effectcraft_automation::tools::{self, Reply};
 use effectcraft_automation::{Backend, McpServer};
@@ -215,7 +215,6 @@ const FLAGS: &[&str] = &[
     "--adv3d",
     "--autosave",
     "--keep-going",
-
     "--ui",
     "--all-tools",
 ];
