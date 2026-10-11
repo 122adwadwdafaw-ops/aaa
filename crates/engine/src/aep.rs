@@ -102,12 +102,35 @@ pub fn is_aepx(bytes: &[u8]) -> bool {
         && (t.contains("AfterEffects") || t.contains("Egg") || t.contains("bdata") || t.contains("string id=\"Utf8\""))
 }
 
-/// Whether a file path or buffer matches After Effects binary (.aep) or XML (.aepx) format.
-pub fn is_aep_or_aepx(path: &str, bytes: &[u8]) -> bool {
-    is_aep(bytes) || is_aepx(bytes) || {
-        let p = path.to_ascii_lowercase();
-        (p.ends_with(".aep") || p.ends_with(".aepx")) && !bytes.is_empty()
+/// Whether `bytes` still opens like a project whatever the file is called: the RIFF/RIFX container
+/// signature, or an XML document (`<` first, past a BOM, leading space or the NULs of a wide
+/// encoding — the `.aepx` case).
+fn looks_like_project(bytes: &[u8]) -> bool {
+    let Some(magic) = bytes.get(0..4) else { return false };
+    if magic == b"RIFX" || magic == b"RIFF" {
+        return true;
     }
+    let rest = match bytes {
+        b if b.starts_with(b"\xEF\xBB\xBF") => &b[3..],
+        b if b.starts_with(b"\xFE\xFF") || b.starts_with(b"\xFF\xFE") => &b[2..],
+        b => b,
+    };
+    matches!(rest.iter().copied().find(|b| !b.is_ascii_whitespace() && *b != 0), Some(b'<'))
+}
+
+/// Whether a file path or buffer matches After Effects binary (.aep) or XML (.aepx) format.
+///
+/// The name alone is not enough: `AI Product Promo (converted).aep` is a 30 MB EffectCraft JSON
+/// project saved under an `.aep` name, and claiming it here sent it to [`parse_rifx`], which
+/// answered "not a RIFF/RIFX file" — while the JSON reader in `commands::file::open`, the branch
+/// that can actually open the file, was never reached. A name now only adds an AEPX whose header
+/// the sniffers above don't recognise; the content still has to look like a project.
+pub fn is_aep_or_aepx(path: &str, bytes: &[u8]) -> bool {
+    if is_aep(bytes) || is_aepx(bytes) {
+        return true;
+    }
+    let p = path.to_ascii_lowercase();
+    (p.ends_with(".aep") || p.ends_with(".aepx")) && looks_like_project(bytes)
 }
 
 /// A node in a parsed RIFF / RIFX chunk tree.
@@ -218,6 +241,109 @@ pub struct DecodedFootage {
     pub is_solid: bool,
 }
 
+/// Per-layer transform values read from a layer's `tdgp` property group. Every field is optional:
+/// a property is absent when After Effects stored it as an animation (this importer does not
+/// keyframe transforms yet), and `None` leaves the layer's built-in default in place.
+#[derive(Clone, Debug, Default)]
+pub struct DecodedTransform {
+    /// Anchor Point, in comp pixels.
+    pub anchor: Option<[f64; 3]>,
+    /// Position, in comp pixels.
+    pub position: Option<[f64; 3]>,
+    /// Percent (After Effects writes scale as a 1.0 = 100% factor).
+    pub scale: Option<[f64; 3]>,
+    /// Orientation, X/Y/Z degrees.
+    pub orientation: Option<[f64; 3]>,
+    /// Z rotation, in degrees.
+    pub rotation: Option<f64>,
+    /// X rotation, in degrees.
+    pub rotation_x: Option<f64>,
+    /// Y rotation, in degrees.
+    pub rotation_y: Option<f64>,
+    /// Percent (After Effects writes opacity as a 0.0..1.0 factor).
+    pub opacity: Option<f64>,
+    /// The layer lives in 3D space: it has an orientation or X/Y rotation, or a position Z offset.
+    /// (Cameras are 3D through their layer type instead, see the layer build in [`from_aep`].)
+    pub three_d: bool,
+}
+
+/// The static value of a `tdbs` property block: its `cdat` chunk read as big-endian f64s. After
+/// Effects writes Point3D values as three doubles and scalar properties as five (the value first,
+/// then fuzz/reference values), so only the leading components are meaningful.
+fn cdat_values(nodes: &[ChunkNode<'_>]) -> Option<Vec<f64>> {
+    for n in nodes {
+        if let ChunkNode::Chunk { id, data } = n
+            && id == b"cdat"
+        {
+            let v: Vec<f64> = data.as_chunks::<8>().0.iter().map(|c| f64::from_be_bytes(*c)).collect();
+            return (!v.is_empty()).then_some(v);
+        }
+    }
+    None
+}
+
+/// Read a layer's transform group (`tdgp`): each property is a `tdmn` match name followed by a
+/// `tdbs` list holding its value. Angles are degrees -- real projects store `180`, `-45`,
+/// `-21.1752` -- positions are comp pixels, and scale/opacity are 1.0-based factors.
+fn read_transform(chunks: &[ChunkNode<'_>], out: &mut DecodedTransform) {
+    let mut pending: Option<String> = None;
+    for c in chunks {
+        match c {
+            ChunkNode::Chunk { id, data } if id == b"tdmn" => {
+                let name = String::from_utf8_lossy(data);
+                pending = name.split('\0').next().map(|s| s.trim().to_string());
+            }
+            ChunkNode::List { list_type, children, .. } if list_type == b"tdbs" => {
+                let Some(name) = pending.take() else { continue };
+                let Some(v) = cdat_values(children) else { continue };
+                let xyz = || -> Option<[f64; 3]> { Some([*v.first()?, *v.get(1)?, *v.get(2)?]) };
+                match name.as_str() {
+                    "ADBE Anchor Point" => out.anchor = xyz(),
+                    "ADBE Position" => {
+                        if let Some(p) = xyz() {
+                            out.three_d |= p[2] != 0.0;
+                            out.position = Some(p);
+                        }
+                    }
+                    "ADBE Scale" => out.scale = xyz().map(|s| [s[0] * 100.0, s[1] * 100.0, s[2] * 100.0]),
+                    "ADBE Orientation" => {
+                        out.orientation = xyz();
+                        out.three_d = true;
+                    }
+                    "ADBE Rotate X" => {
+                        out.rotation_x = v.first().copied();
+                        out.three_d = true;
+                    }
+                    "ADBE Rotate Y" => {
+                        out.rotation_y = v.first().copied();
+                        out.three_d = true;
+                    }
+                    "ADBE Rotate Z" => out.rotation = v.first().copied(),
+                    "ADBE Opacity" => out.opacity = v.first().map(|o| o * 100.0),
+                    _ => {}
+                }
+            }
+            ChunkNode::List { children, .. } => read_transform(children, out),
+            _ => {}
+        }
+    }
+}
+
+/// Write a transform property's static value, leaving the built-in default when the group or the
+/// property itself is missing.
+fn set_vec3(layer: &mut effectcraft_project::Layer, path: &str, v: [f64; 3]) {
+    if let Some(p) = layer.props.prop_mut(path) {
+        p.value = effectcraft_keyframe::Value::Vec3(v);
+    }
+}
+
+fn set_scalar(layer: &mut effectcraft_project::Layer, path: &str, v: f64) {
+    if let Some(p) = layer.props.prop_mut(path) {
+        p.value = effectcraft_keyframe::Value::Scalar(v);
+    }
+}
+
+
 /// Extracted layer information.
 #[derive(Clone, Debug)]
 pub struct DecodedLayer {
@@ -228,6 +354,8 @@ pub struct DecodedLayer {
     pub start_sec: f64,
     pub source_item_id: u32,
     pub three_d: bool,
+    /// Transform values read from the layer's `tdgp` group.
+    pub transform: DecodedTransform,
     pub is_text: bool,
     pub is_shape: bool,
     pub text_font: Option<String>,
@@ -713,6 +841,7 @@ fn parse_layer(layer_type: [u8; 4], chunks: &[ChunkNode<'_>]) -> DecodedLayer {
     let mut is_text = false;
     let mut is_shape = false;
     let mut three_d = layer_type == *b"CLay";
+    let mut transform = DecodedTransform::default();
     let mut effects = Vec::new();
     let mut text_font = None;
 
@@ -731,6 +860,7 @@ fn parse_layer(layer_type: [u8; 4], chunks: &[ChunkNode<'_>]) -> DecodedLayer {
             ChunkNode::List { list_type, children, .. } => {
                 if list_type == b"tdgp" {
                     inspect_tdgp(children, &mut is_text, &mut is_shape, &mut three_d, &mut effects, &mut text_font);
+                    read_transform(children, &mut transform);
                 }
             }
         }
@@ -797,7 +927,8 @@ fn parse_layer(layer_type: [u8; 4], chunks: &[ChunkNode<'_>]) -> DecodedLayer {
         out_sec,
         start_sec: in_sec,
         source_item_id,
-        three_d,
+        three_d: three_d || transform.three_d,
+        transform,
         is_text,
         is_shape,
         text_font,
@@ -1044,6 +1175,13 @@ fn build_project(
         };
 
         for dlayer in dcomp.layers {
+            // After Effects stores its three built-in custom views (View ▸ Switch 3D View) as
+            // camera entries in a comp's layer list. They are view bookmarks, not layers: importing
+            // them would list them in the timeline and make a saved 3/4 view the comp's active
+            // camera, looking past the comp. EffectCraft has its own custom views.
+            if dlayer.layer_type == *b"CLay" && dlayer.name.starts_with("Custom View") {
+                continue;
+            }
             let source = match dlayer.layer_type.as_slice() {
                 b"SLay" => {
                     let sid = ItemId(project.alloc());
@@ -1099,6 +1237,42 @@ fn build_project(
             layer.out_point = Tick::from_seconds_f64(dlayer.out_sec.max(dlayer.in_sec + 0.033));
             layer.switches.three_d = dlayer.three_d || layer.is_camera();
             layer.switches.motion_blur = true;
+
+            // Transform values: positions in comp pixels, scale/opacity 1.0-based, angles in
+            // degrees. Properties After Effects stored as animation have no static value yet, so
+            // those keep the layer's built-in defaults.
+            let tr = &dlayer.transform;
+            if layer.is_camera() {
+                // Cameras keep the Point of Interest where AV layers keep the anchor, and an After
+                // Effects camera is two-node by default: it looks at that point.
+                if let Some(v) = tr.anchor {
+                    set_vec3(&mut layer, "transform/poi", v);
+                }
+                layer.auto_orient = effectcraft_project::AutoOrient::TowardsPointOfInterest;
+            } else if let Some(v) = tr.anchor {
+                set_vec3(&mut layer, "transform/anchor", v);
+            }
+            if let Some(v) = tr.position {
+                set_vec3(&mut layer, "transform/position", v);
+            }
+            if let Some(v) = tr.scale {
+                set_vec3(&mut layer, "transform/scale", v);
+            }
+            if let Some(v) = tr.orientation {
+                set_vec3(&mut layer, "transform/orientation", v);
+            }
+            if let Some(v) = tr.rotation {
+                set_scalar(&mut layer, "transform/rotation", v);
+            }
+            if let Some(v) = tr.rotation_x {
+                set_scalar(&mut layer, "transform/rotationX", v);
+            }
+            if let Some(v) = tr.rotation_y {
+                set_scalar(&mut layer, "transform/rotationY", v);
+            }
+            if let Some(v) = tr.opacity {
+                set_scalar(&mut layer, "transform/opacity", v);
+            }
 
             if dlayer.is_text {
                 let font_name = dlayer.text_font.as_deref()
@@ -1362,6 +1536,74 @@ mod tests {
         assert!(!is_aep(&sample));
     }
 
+    /// A layer's transform group is read from `tdgp` (a `tdmn` match name followed by a `tdbs`
+    /// list holding the value in its `cdat` chunk): positions are comp pixels, scale and opacity
+    /// are 1.0-based factors, angles are degrees, and a position Z offset means the layer is 3D.
+    #[test]
+    fn layer_transform_is_read_from_tdgp() {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut v = Vec::new();
+            v.extend_from_slice(id);
+            v.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            v.extend_from_slice(data);
+            if data.len() % 2 == 1 {
+                v.push(0);
+            }
+            v
+        }
+        fn list(ltype: &[u8; 4], children: &[u8]) -> Vec<u8> {
+            let mut body = Vec::new();
+            body.extend_from_slice(ltype);
+            body.extend_from_slice(children);
+            chunk(b"LIST", &body)
+        }
+        fn doubles(vals: &[f64]) -> Vec<u8> {
+            vals.iter().flat_map(|v| v.to_be_bytes()).collect()
+        }
+        let tdmn = |name: &str| {
+            let mut d = vec![0u8; 40];
+            d[..name.len()].copy_from_slice(name.as_bytes());
+            chunk(b"tdmn", &d)
+        };
+
+        let mut tg = Vec::new();
+        for (name, vals) in [
+            ("ADBE Anchor Point", [540.0, 960.0, 0.0]),
+            ("ADBE Position", [540.0, 960.0, -5000.0]),
+            ("ADBE Scale", [1.0, 1.0, 1.0]),
+        ] {
+            tg.extend_from_slice(&tdmn(name));
+            tg.extend_from_slice(&list(b"tdbs", &chunk(b"cdat", &doubles(&vals))));
+        }
+        for (name, v) in [("ADBE Rotate Z", 180.0), ("ADBE Opacity", 0.5)] {
+            tg.extend_from_slice(&tdmn(name));
+            tg.extend_from_slice(&list(b"tdbs", &chunk(b"cdat", &doubles(&[v]))));
+        }
+
+        let mut children = Vec::new();
+        children.extend_from_slice(&chunk(b"Utf8", b"Front"));
+        children.extend_from_slice(&list(b"tdgp", &tg));
+
+        let mut file = Vec::new();
+        file.extend_from_slice(b"RIFX");
+        file.extend_from_slice(&0u32.to_be_bytes());
+        file.extend_from_slice(b"Egg!");
+        file.extend_from_slice(&list(b"Layr", &children));
+
+        let tree = parse_rifx(&file).expect("parse");
+        let ChunkNode::List { children: layer, .. } = &tree[0] else {
+            panic!("expected a layer list");
+        };
+        let l = parse_layer(*b"Layr", layer);
+        assert_eq!(l.name, "Front");
+        assert_eq!(l.transform.anchor, Some([540.0, 960.0, 0.0]));
+        assert_eq!(l.transform.position, Some([540.0, 960.0, -5000.0]));
+        assert_eq!(l.transform.scale, Some([100.0, 100.0, 100.0]));
+        assert_eq!(l.transform.rotation, Some(180.0));
+        assert_eq!(l.transform.opacity, Some(50.0));
+        assert!(l.transform.three_d, "a non-zero position Z means the layer is 3D");
+    }
+
     #[test]
     fn parses_synthetic_aep_fixture() {
         let bytes = make_synthetic_aep();
@@ -1407,6 +1649,7 @@ mod tests {
             let slice = &valid_aep[..len];
             let _ = is_aep(slice);
             let _ = is_aepx(slice);
+            let _ = is_aep_or_aepx("f.aep", slice);
             let _ = from_aep_or_aepx_with_report(slice, None);
         }
 
@@ -1416,7 +1659,39 @@ mod tests {
             let slice = &garbage[..len];
             let _ = is_aep(slice);
             let _ = is_aepx(slice);
+            let _ = is_aep_or_aepx("f.aepx", slice);
             let _ = from_aep_or_aepx_with_report(slice, None);
         }
+    }
+
+    #[test]
+    fn json_project_named_aep_is_not_routed_to_the_binary_reader() {
+        // The real file: `AI Product Promo (converted).aep`, an EffectCraft project saved as JSON.
+        let json = br#"{ "savedBy": "0.4.0", "schema": 1, "settings": {}, "items": {} }"#;
+        assert!(!is_aep_or_aepx("AI Product Promo (converted).aep", json));
+        assert!(!is_aep_or_aepx("promo.aepx", json));
+        assert!(!is_aep_or_aepx("promo.AEP", json));
+        assert!(!is_aep_or_aepx("promo.aep", b""));
+        assert!(!is_aep_or_aepx("promo.aep", b"not a project at all"));
+        // Same bytes, a name that never claimed to be an AEP: unchanged, and not claimed now either.
+        assert!(!is_aep_or_aepx("promo.ecproj", b"<?xml version=\"1.0\"?><Foo/>"));
+    }
+
+    #[test]
+    fn renamed_aep_and_aepx_are_still_claimed() {
+        // Content, not name: a synthetic binary .aep under any extension.
+        let aep = make_synthetic_aep();
+        assert!(is_aep_or_aepx("x.aep", &aep));
+        assert!(is_aep_or_aepx("x.bin", &aep));
+        // An AEPX saved as `.aep`, with and without its XML declaration.
+        assert!(is_aep_or_aepx("x.aep", b"<?xml version=\"1.0\"?><AfterEffectsProject/>"));
+        assert!(is_aep_or_aepx("x.aep", b"\r\n  <AfterEffectsProject/>"));
+        // XML the sniffers don't recognise but the name does: still claimed.
+        assert!(is_aep_or_aepx("x.aepx", b"<?xml version=\"1.0\"?><Foo/>"));
+        // A widened (UTF-16) AEPX: BOM, then NUL-interleaved markup.
+        let wide: Vec<u8> = [0xFE, 0xFF].into_iter().chain(b"<?xml version=\"1.0\"?><AfterEffectsProject/>".iter().flat_map(|b| [0u8, *b])).collect();
+        assert!(is_aep_or_aepx("x.aepx", &wide));
+        // Truncated to the BOM alone: no project, nothing claimed.
+        assert!(!is_aep_or_aepx("x.aepx", &[0xFE, 0xFF]));
     }
 }

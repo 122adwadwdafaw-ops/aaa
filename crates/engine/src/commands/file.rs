@@ -85,7 +85,20 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
 fn resolve_relative_footage(p: &mut Project, project_path: &str, services: &dyn crate::Services) {
     use std::path::Path;
     let Some(dir) = Path::new(project_path).parent().filter(|d| !d.as_os_str().is_empty()) else { return };
-    let beside = |f: &str| dir.join(f).to_string_lossy().to_string();
+    // A stored path is written with `/` (`media/clip.png` — the project format and the importers
+    // keep paths portable), but `Path::join` appends its right side verbatim: joining gave
+    // `…\media/clip.png`, mixed separators. Windows resolves that, which is why the clip was
+    // found at all, but it isn't the same string as the path it names, so it never compared equal
+    // to a path built with `Path::join` and the Dependencies panel, the project round-trip and
+    // copy/paste all disagreed about a file sitting right next to the project. Rebuild it
+    // component by component (the same relative-footage lookup as #652).
+    let beside = |f: &str| {
+        let mut p = dir.to_path_buf();
+        for c in Path::new(f).components() {
+            p.push(c.as_os_str());
+        }
+        p.to_string_lossy().to_string()
+    };
     for item in p.items.values_mut() {
         let ItemKind::Footage(f) = &mut item.kind else { continue };
         if f.path.is_empty() || !Path::new(&f.path).is_relative() || services.exists(&f.path) || !services.exists(&beside(&f.path)) {
