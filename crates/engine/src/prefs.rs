@@ -317,10 +317,13 @@ page!(
         bridge_url: String = "127.0.0.1:8765".into(),
         /// A local Ollama server, for the direct connection.
         ollama_url: String = "127.0.0.1:11434".into(),
-        /// The model the direct connection asks for (`aiChat.agent` = `ollama`).
+        /// The model the direct Ollama connection asks for (`aiChat.agent` = `ollama`).
         model: String = "llama3.2:3b".into(),
-        /// The agent the panel starts on; `ollama` = the local model directly.
+        /// The agent the panel talks to; `ollama` (or empty) = the local model directly.
         agent: String = "ollama".into(),
+        /// The model asked of a bridge agent; empty = the agent's own default. ACP agents
+        /// match it against the models they offer (`opus` → the first Claude Opus).
+        agent_model: String = "".into(),
         /// Sent as the first message of every conversation.
         system_prompt: String = "You are the AI Chat panel inside EffectCraft, an open-source After Effects-style motion graphics app. Keep replies short, concrete and friendly. You cannot see the project yet; if asked to change it, say what you would do.".into(),
     }
@@ -1361,15 +1364,29 @@ pub fn pages() -> Vec<Page> {
             id: "aiChat",
             title: "AI Chat",
             items: vec![
+                Section("Agent"),
+                s("aiChat.agent", "Agent", Kind::Text, true),
+                s(
+                    "aiChat.agentModel",
+                    "Agent Model",
+                    Kind::Choice(&[
+                        ("Agent Default", ""),
+                        ("Claude Opus", "opus"),
+                        ("Claude Sonnet", "sonnet"),
+                        ("Claude Haiku", "haiku"),
+                        ("GPT", "gpt"),
+                        ("Gemini", "gemini"),
+                    ]),
+                    true,
+                ),
                 Section("Connection"),
                 s("aiChat.bridgeUrl", "Bridge URL", Kind::Text, true),
                 s("aiChat.ollamaUrl", "Ollama URL", Kind::Text, true),
-                s("aiChat.model", "Model", Kind::Text, true),
-                s("aiChat.agent", "Default Agent", Kind::Text, true),
+                s("aiChat.model", "Ollama Model", Kind::Text, true),
                 Section("Prompt"),
                 s("aiChat.systemPrompt", "System Prompt", Kind::Text, true),
                 Note(
-                    "Window ▸ AI Chat talks to local servers only: Ollama directly, or the bridge (bridge/agent-bridge.py) for Codex, Devin over ACP, OpenCode and any CLI. Requests run on a worker thread.",
+                    "The AI Chat panel (Window menu) talks to local servers only: Ollama directly, or the bridge (bridge/agent-bridge.py) for Codex, Devin over ACP, OpenCode and any CLI. Agent Model names the model a bridge agent is asked for; Agent Default keeps the agent's own. Requests run on a worker thread.",
                 ),
             ],
         },

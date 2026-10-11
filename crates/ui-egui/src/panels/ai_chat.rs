@@ -47,23 +47,15 @@ pub struct Agent {
 }
 
 /// AI Chat state (serde, so agents can read it).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiChat {
     pub input: String,
     pub lines: Vec<Line>,
     pub history: Vec<Message>,
-    /// The selected agent id; `ollama` = the local model directly.
-    pub agent: String,
     /// The bridge's agents, last fetched.
     pub agents: Vec<Agent>,
     pub status: String,
-}
-
-impl Default for AiChat {
-    fn default() -> Self {
-        AiChat { input: String::new(), lines: Vec::new(), history: Vec::new(), agent: "ollama".into(), agents: Vec::new(), status: String::new() }
-    }
 }
 
 impl AiChat {
@@ -76,10 +68,10 @@ impl AiChat {
     }
 }
 
-/// A finished model request.
+/// A finished model request: the reply text and the id of the model that answered it.
 pub struct Reply {
     pub agent: String,
-    pub result: Result<String, String>,
+    pub result: Result<(String, Option<String>), String>,
 }
 
 /// Worker threads behind the panel (not serialized; lives on the app).
@@ -153,22 +145,28 @@ mod http {
     }
 }
 
-/// One chat request; `ollama` talks to the local model, anything else to the bridge.
+/// One chat request; `ollama` talks to the local model, anything else to the bridge. The reply
+/// carries the id of the model that answered (the bridge resolves `aiChat.agentModel`).
 #[cfg(not(target_arch = "wasm32"))]
-fn request(agent: &str, messages: &[Message], prefs: &effectcraft_engine::prefs::AiChatPrefs) -> Result<String, String> {
+fn request(agent: &str, messages: &[Message], prefs: &effectcraft_engine::prefs::AiChatPrefs) -> Result<(String, Option<String>), String> {
     let msgs: Vec<Value> = messages.iter().map(|m| json!({"role": m.role, "content": m.content})).collect();
     if agent == "ollama" || agent.is_empty() {
         let body = json!({"model": prefs.model, "stream": false, "messages": msgs}).to_string();
         let v = http::json(host_of(&prefs.ollama_url), "POST", "/api/chat", Some(&body), Duration::from_secs(300))?;
         let reply = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_str).unwrap_or_default();
-        Ok(if reply.is_empty() { "(empty reply)".into() } else { reply.to_string() })
+        Ok((if reply.is_empty() { "(empty reply)".into() } else { reply.to_string() }, Some(prefs.model.clone())))
     } else {
-        let body = json!({"agent": agent, "messages": msgs}).to_string();
-        let v = http::json(host_of(&prefs.bridge_url), "POST", "/chat", Some(&body), Duration::from_secs(600))?;
+        let mut body = json!({"agent": agent, "messages": msgs});
+        if !prefs.agent_model.is_empty() {
+            body["model"] = json!(prefs.agent_model);
+        }
+        let v = http::json(host_of(&prefs.bridge_url), "POST", "/chat", Some(&body.to_string()), Duration::from_secs(600))?;
         if let Some(e) = v.get("error").and_then(Value::as_str) {
             return Err(e.to_string());
         }
-        Ok(v.get("reply").and_then(Value::as_str).unwrap_or("(empty reply)").to_string())
+        let reply = v.get("reply").and_then(Value::as_str).unwrap_or("(empty reply)").to_string();
+        let model = v.get("model").and_then(Value::as_str).map(str::to_string);
+        Ok((reply, model))
     }
 }
 
@@ -181,7 +179,7 @@ pub fn send(app: &mut EffectcraftApp, ctx: &egui::Context) {
         return;
     }
     let prefs = app.session.prefs.ai_chat.clone();
-    let agent = if app.ui.ai_chat.agent.trim().is_empty() { prefs.agent.clone() } else { app.ui.ai_chat.agent.clone() };
+    let agent = if prefs.agent.trim().is_empty() { "ollama".to_string() } else { prefs.agent.clone() };
     let chat = &mut app.ui.ai_chat;
     chat.input.clear();
     chat.push("you", &text);
@@ -245,10 +243,13 @@ pub fn poll(app: &mut EffectcraftApp, ctx: &egui::Context) {
                 app.ai_chat.busy = false;
                 let chat = &mut app.ui.ai_chat;
                 match r.result {
-                    Ok(text) => {
+                    Ok((text, model)) => {
                         chat.push("ai", &text);
                         chat.history.push(Message { role: "assistant".into(), content: text });
-                        chat.status = "ready".into();
+                        chat.status = match model {
+                            Some(m) if !m.is_empty() => format!("ready · {m}"),
+                            _ => "ready".into(),
+                        };
                     }
                     Err(e) => {
                         // The failed turn doesn't stay in the conversation, so a retry doesn't duplicate it.
@@ -299,7 +300,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let bar_h = 26.0;
     let top = Rect::from_min_size(rect.min, vec2(rect.width(), bar_h));
     let agents = app.ui.ai_chat.agents.clone();
-    let selected = app.ui.ai_chat.agent.clone();
+    let selected = {
+        let a = app.session.prefs.ai_chat.agent.trim();
+        if a.is_empty() { "ollama".to_string() } else { a.to_string() }
+    };
     let mut pick: Option<String> = None;
     let mut refresh = false;
     {
@@ -324,7 +328,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     app.auto.add("aiChat.agent", top, "AI Chat agent");
     if let Some(id) = pick {
-        app.ui.ai_chat.agent = id;
+        // The `aiChat.agent` pref is the single source of truth (the Settings page edits it too).
+        let ctx = ui.ctx().clone();
+        let _ = crate::menus::invoke(app, &ctx, "prefs.set", serde_json::json!({"key": "aiChat.agent", "value": id}));
     }
     if refresh {
         let ctx = ui.ctx().clone();
@@ -461,9 +467,10 @@ mod tests {
     }
 
     /// A one-shot HTTP server that reads the whole request before replying (closing with unread
-    /// request data would reset the connection instead of delivering the response).
+    /// request data would reset the connection instead of delivering the response). The thread
+    /// returns the raw request it received.
     #[cfg(not(target_arch = "wasm32"))]
-    fn serve_once(status_line: &str, body: &str) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+    fn serve_once(status_line: &str, body: &str) -> (std::net::SocketAddr, std::thread::JoinHandle<String>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -486,7 +493,37 @@ mod tests {
                 }
             }
             let _ = s.write_all(response.as_bytes());
+            String::from_utf8_lossy(&req).into_owned()
         });
         (addr, handle)
+    }
+
+    /// The bridge gets `agent`, `messages` and — only when a model is chosen in Settings —
+    /// `model`; it answers with the id of the model that replied, which the status line shows.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn request_sends_the_chosen_agent_model_to_the_bridge() {
+        let (addr, server) = serve_once("HTTP/1.1 200 OK", r#"{"reply":"opus ok","model":"claude-opus-5-5-medium"}"#);
+        let prefs =
+            effectcraft_engine::prefs::AiChatPrefs { bridge_url: addr.to_string(), agent: "devin".into(), agent_model: "opus".into(), ..Default::default() };
+        let (reply, model) = request("devin", &[Message { role: "user".into(), content: "hi".into() }], &prefs).unwrap();
+        assert_eq!(reply, "opus ok");
+        assert_eq!(model.as_deref(), Some("claude-opus-5-5-medium"));
+        let req = server.join().unwrap();
+        assert!(req.contains(r#""agent":"devin""#), "{req}");
+        assert!(req.contains(r#""model":"opus""#), "{req}");
+    }
+
+    /// At Agent Default the request carries no `model`, so the agent keeps its own.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn request_omits_the_model_at_agent_default() {
+        let (addr, server) = serve_once("HTTP/1.1 200 OK", r#"{"reply":"hi"}"#);
+        let prefs = effectcraft_engine::prefs::AiChatPrefs { bridge_url: addr.to_string(), agent: "devin".into(), ..Default::default() };
+        let (reply, model) = request("devin", &[Message { role: "user".into(), content: "hi".into() }], &prefs).unwrap();
+        assert_eq!(reply, "hi");
+        assert_eq!(model, None);
+        let req = server.join().unwrap();
+        assert!(!req.contains(r#""model""#), "{req}");
     }
 }

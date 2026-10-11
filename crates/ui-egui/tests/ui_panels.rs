@@ -67,7 +67,8 @@ fn window_menu_opens_the_new_panels() {
     }
 }
 
-/// The AI Chat panel's Settings button opens Settings ▸ AI Chat — one click from the panel.
+/// The AI Chat panel's Settings button opens Settings ▸ AI Chat — one click from the panel —
+/// where the Agent Model dropdown offers Claude Opus.
 #[test]
 fn ai_chat_settings_button_opens_its_page() {
     let mut h = harness();
@@ -76,6 +77,21 @@ fn ai_chat_settings_button_opens_its_page() {
     h.run_steps(2);
     assert_eq!(h.state().dialog, Some(Dialog::Settings));
     assert!(h.state().auto.find("settings.aiChat.bridgeUrl").is_some(), "the AI Chat page is showing");
+    assert!(h.state().auto.find("settings.aiChat.agentModel").is_some(), "the Agent Model dropdown is on the page");
+}
+
+/// Picking an agent in the panel's picker writes the `aiChat.agent` pref — the same key the
+/// Settings page edits — instead of keeping a separate panel-side selection.
+#[test]
+fn ai_chat_picker_persists_the_agent_pref() {
+    let mut h = harness();
+    h.state_mut().session.execute("prefs.set", json!({"key": "aiChat.agent", "value": "codex"})).unwrap();
+    open(&mut h, "aiChat");
+    click(&mut h, "aiChat.agent");
+    h.run_steps(2);
+    h.get_by_label("Ollama (direct)").click();
+    h.run_steps(2);
+    assert_eq!(h.state().session.prefs.ai_chat.agent, "ollama");
 }
 
 #[test]

@@ -227,6 +227,26 @@ fn ai_chat_settings_default_and_reset() {
     assert!(s.execute("prefs.open", json!({"page": "AI Chat"})).is_ok());
 }
 
+/// The Agent Model dropdown lives on the AI Chat page as a Choice; `prefs.set` accepts its
+/// values, including "" (Agent Default).
+#[test]
+fn ai_chat_agent_model_is_a_choice_on_the_page() {
+    let page = crate::prefs::pages().into_iter().find(|p| p.id == "aiChat").expect("aiChat page");
+    let item = page.items.iter().find(|i| matches!(i, crate::prefs::Item::Setting { key: "aiChat.agentModel", .. }));
+    let Some(crate::prefs::Item::Setting { kind: crate::prefs::Kind::Choice(options), .. }) = item else {
+        panic!("aiChat.agentModel is not a Choice on the page");
+    };
+    assert!(options.contains(&("Claude Opus", "opus")), "{options:?}");
+    assert!(options.contains(&("Agent Default", "")), "{options:?}");
+
+    let store = Arc::new(MemoryConfig::default());
+    let mut s = Session { config: Some(store), ..Default::default() };
+    s.execute("prefs.set", json!({"key": "aiChat.agentModel", "value": "opus"})).unwrap();
+    assert_eq!(s.prefs.ai_chat.agent_model, "opus");
+    s.execute("prefs.set", json!({"key": "aiChat.agentModel", "value": ""})).unwrap();
+    assert_eq!(s.prefs.ai_chat.agent_model, "");
+}
+
 #[test]
 fn undo_levels_are_honoured() {
     let mut s = session_with_comp();

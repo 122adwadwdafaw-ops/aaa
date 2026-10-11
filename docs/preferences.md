@@ -235,8 +235,9 @@ state, so agents can read them like any other panel.
 
 | Key | What |
 |---|---|
+| `aiChat.agent` | the agent the panel talks to (`ollama`, or empty, = the local model directly) |
+| `aiChat.agentModel` | the model a bridge agent is asked for; empty = the agent's own default (ACP agents match it against the models they offer, `opus` → the first Claude Opus) |
 | `aiChat.bridgeUrl` | the bridge to talk to (`127.0.0.1:8765`) |
 | `aiChat.ollamaUrl` | the Ollama server for the direct connection (`127.0.0.1:11434`) |
-| `aiChat.model` | the model the direct connection asks for |
-| `aiChat.agent` | the agent the panel starts on (`ollama` = the local model directly) |
+| `aiChat.model` | the model the direct Ollama connection asks for |
 | `aiChat.systemPrompt` | the first message of every conversation |
