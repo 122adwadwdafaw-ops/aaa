@@ -224,11 +224,20 @@ struct Upload {
     last_use: u64,
 }
 
-#[derive(Default)]
 struct Uploads {
     map: HashMap<usize, Upload>,
     bytes: usize,
     clock: u64,
+    /// Live textures dropped to stay under [`Self::budget`] (#687): every one is a full
+    /// re-upload on a later frame. Counted and warned once, never silently.
+    starves: u64,
+    budget: usize,
+}
+
+impl Default for Uploads {
+    fn default() -> Self {
+        Self { map: HashMap::new(), bytes: 0, clock: 0, starves: 0, budget: UPLOAD_BUDGET }
+    }
 }
 
 /// The device and everything compiled for it.
@@ -873,7 +882,7 @@ impl GpuContext {
             }
             u.bytes += bytes;
             // Drop textures of freed buffers, then the least recently used over budget.
-            if u.bytes > UPLOAD_BUDGET {
+            if u.bytes > u.budget {
                 let dead: Vec<usize> = u.map.iter().filter(|(_, e)| e.buf.strong_count() == 0).map(|(k, _)| *k).collect();
                 for k in dead {
                     if let Some(e) = u.map.remove(&k) {
@@ -881,14 +890,33 @@ impl GpuContext {
                     }
                 }
             }
-            while u.bytes > UPLOAD_BUDGET {
+            while u.bytes > u.budget {
                 let Some(k) = u.map.iter().min_by_key(|(_, e)| e.last_use).map(|(k, _)| *k) else { break };
                 if let Some(e) = u.map.remove(&k) {
                     u.bytes -= e.bytes;
+                    if e.buf.strong_count() > 0 {
+                        u.starves += 1;
+                        if u.starves == 1 {
+                            log::warn!(
+                                "gpu {}: the {} MB upload budget cannot hold this project's layers; their textures now re-upload every frame (Help ▸ Reveal Logs)",
+                                self.name,
+                                u.budget >> 20
+                            );
+                        }
+                    }
                 }
             }
         }
         Some(img)
+    }
+
+    /// Size the layer-texture upload budget in bytes (default 1536 MB): an embedder on a
+    /// small-memory device lowers it so the working pool keeps room; over-budget evictions of
+    /// live layers are logged, never silent (#687).
+    pub fn set_upload_budget(&self, bytes: usize) {
+        if let Ok(mut u) = self.uploads.lock() {
+            u.budget = bytes.max(16 << 20);
+        }
     }
 
     /// Forget uploaded layer textures.
