@@ -1902,6 +1902,72 @@ fn roto_brush_ctrl_drag_resizes_the_brush() {
     assert!((s[0].radius - dia / 2.0).abs() < 1e-6, "{} vs {dia}", s[0].radius);
 }
 
+/// The Layer panel zooms around the pointer with the scroll wheel and the Zoom tool, pans with
+/// the Hand tool, a Space-drag and a middle-button drag (also while a paint tool is active,
+/// without painting), and the magnification in the bottom bar goes back to fit.
+#[test]
+fn layer_panel_zooms_and_pans() {
+    let mut h = harness();
+    let id = h.state().session.active_comp().unwrap().layers.iter().find(|l| l.name == "Box").unwrap().id.0;
+    h.state_mut().session.execute("layer.select", json!({"layers": [id]})).unwrap();
+    h.state_mut().ui.layer_panel = Some(id);
+    h.state_mut().show_panel(effectcraft_ui_egui::dock::PanelKind::Layer);
+    h.state_mut().ui.tool = Tool::Brush;
+    h.run_steps(3);
+    let fit = rect(&h, "layerPanel.canvas");
+    let rev = h.state().session.revision;
+    // Wheel: zooms in, keeping the layer point under the pointer in place.
+    let at = fit.min + fit.size() * 0.25;
+    h.event(Event::PointerMoved(at));
+    h.run_steps(2);
+    h.event(Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, 200.0), modifiers: Default::default(), phase: egui::TouchPhase::Move });
+    h.run_steps(20);
+    let zoomed = rect(&h, "layerPanel.canvas");
+    assert!(zoomed.width() > fit.width() * 1.2, "{zoomed:?} vs {fit:?}");
+    let q = zoomed.min + zoomed.size() * 0.25;
+    assert!(q.distance(at) < 1.0, "the point under the pointer stays: {q:?} vs {at:?}");
+    // Space-drag and middle-drag pan, with the Brush still the tool; nothing is painted.
+    let c = rect(&h, "layerPanel.area").center();
+    h.event(Event::PointerMoved(c));
+    h.key_down(egui::Key::Space);
+    h.run_steps(2);
+    drag(&mut h, c, c + vec2(30.0, 10.0));
+    h.key_up(egui::Key::Space);
+    h.run_steps(2);
+    let panned = rect(&h, "layerPanel.canvas");
+    assert!((panned.min - zoomed.min - vec2(30.0, 10.0)).length() < 1.0, "{panned:?} vs {zoomed:?}");
+    h.event(Event::PointerMoved(c));
+    h.event(Event::PointerButton { pos: c, button: egui::PointerButton::Middle, pressed: true, modifiers: Default::default() });
+    h.run_steps(2);
+    h.event(Event::PointerMoved(c + vec2(-20.0, 0.0)));
+    h.run_steps(2);
+    h.event(Event::PointerButton { pos: c + vec2(-20.0, 0.0), button: egui::PointerButton::Middle, pressed: false, modifiers: Default::default() });
+    h.run_steps(2);
+    let panned2 = rect(&h, "layerPanel.canvas");
+    assert!((panned2.min - panned.min - vec2(-20.0, 0.0)).length() < 1.0, "{panned2:?} vs {panned:?}");
+    assert_eq!(panned2.size(), zoomed.size(), "panning keeps the magnification");
+    // Hand tool drag.
+    h.state_mut().ui.tool = Tool::Hand;
+    h.run_steps(2);
+    drag(&mut h, c, c + vec2(0.0, 15.0));
+    let panned3 = rect(&h, "layerPanel.canvas");
+    assert!((panned3.min - panned2.min - vec2(0.0, 15.0)).length() < 1.0, "{panned3:?} vs {panned2:?}");
+    // Zoom tool: a click doubles around the click.
+    h.state_mut().ui.tool = Tool::Zoom;
+    h.run_steps(2);
+    click(&mut h, c);
+    h.run_steps(2);
+    let doubled = rect(&h, "layerPanel.canvas");
+    assert!((doubled.width() - panned3.width() * 2.0).abs() < 1.0, "{doubled:?} vs {panned3:?}");
+    assert_eq!(h.state().session.revision, rev, "navigating paints nothing");
+    // The magnification readout resets to fit.
+    let z = rect(&h, "layerPanel.zoom").center();
+    click(&mut h, z);
+    h.run_steps(2);
+    let back = rect(&h, "layerPanel.canvas");
+    assert!((back.min - fit.min).length() < 0.5 && (back.size() - fit.size()).length() < 0.5, "{back:?} vs {fit:?}");
+}
+
 /// #553: the Pen slot's tools work on a motion path as in After Effects: Add Vertex (and the
 /// Pen) add a keyframe where the path is clicked, Convert Vertex switches a keyframe between
 /// Linear and Auto Bezier, Delete Vertex removes it; the pointer is the tool's pen.

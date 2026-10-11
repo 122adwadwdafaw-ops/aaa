@@ -7,6 +7,10 @@
 //! at the current time (the drag's duration feeds Write On). Alt/Option-click with the Clone
 //! Stamp sets the clone source.
 //!
+//! The scroll wheel (or a pinch) zooms around the pointer; the Hand tool, a Space-drag or a
+//! middle-button drag pans; the Zoom tool zooms in on a click (out with Alt/Option). The
+//! magnification in the bottom bar resets the view to fit.
+//!
 //! With a Roto Brush & Refine Edge effect the panel shows the effect's input with the matte
 //! overlay, the segmentation span bar and the view / Freeze buttons; the Roto Brush and Refine
 //! Edge tools paint their strokes here (see [`super::roto_tool`]).
@@ -101,7 +105,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.ui.layer_view = Some(i);
     }
     let tc = super::timecode(&app.session, &comp, time);
-    p.text(pos2(bar.max.x - 10.0, bar.center().y), Align2::RIGHT_CENTER, tc, Tokens::mono(12.0), t.timecode);
+    let tc_rect = p.text(pos2(bar.max.x - 10.0, bar.center().y), Align2::RIGHT_CENTER, tc, Tokens::mono(12.0), t.timecode);
     // Roto Brush: view / Freeze buttons and the segmentation span bar.
     let mut canvas_bottom = bar.min.y;
     if roto.is_some() {
@@ -116,8 +120,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     p.rect_filled(area, 0.0, t.pasteboard);
     // The layer's effect bounds, in effect space (where paint and Roto Brush strokes are).
     let [lw, lh] = effectcraft_engine::render::effect_bounds(&app.session.project, &comp, &layer).0;
-    let zoom = ((area.width() - 40.0) as f64 / lw).min((area.height() - 40.0) as f64 / lh).max(0.01);
-    let origin = area.center() - vec2((lw * zoom / 2.0) as f32, (lh * zoom / 2.0) as f32);
+    let fit = ((area.width() - 40.0) as f64 / lw).min((area.height() - 40.0) as f64 / lh).max(0.01);
+    let zoom = app.ui.layer_zoom.map(|z| z as f64).filter(|z| z.is_finite() && *z > 0.0).unwrap_or(fit);
+    let center = area.center() + vec2(app.ui.layer_pan[0], app.ui.layer_pan[1]);
+    let origin = center - vec2((lw * zoom / 2.0) as f32, (lh * zoom / 2.0) as f32);
     let to_screen = |q: [f64; 2]| pos2(origin.x + (q[0] * zoom) as f32, origin.y + (q[1] * zoom) as f32);
     let to_layer = |s: Pos2| [((s.x - origin.x) as f64) / zoom, ((s.y - origin.y) as f64) / zoom];
     let frame = Rect::from_min_max(to_screen([0.0, 0.0]), to_screen([lw, lh]));
@@ -165,6 +171,91 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     painter.rect_stroke(frame, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
     app.auto.add("layerPanel.canvas", frame, &layer.name);
     app.auto.add("layerPanel.area", area, "Layer panel");
+
+    // Magnification (click: back to fit).
+    let label = if app.ui.layer_zoom.is_some() { format!("{:.0}%", zoom * ppp * 100.0) } else { format!("{} ({:.0}%)", tr("Fit"), zoom * ppp * 100.0) };
+    let zr = Rect::from_min_max(pos2(tc_rect.min.x - 100.0, bar.center().y - 10.0), pos2(tc_rect.min.x - 12.0, bar.center().y + 10.0));
+    if zr.min.x > vr.max.x {
+        let zresp = ui.interact(zr, egui::Id::new("layer-panel-zoom"), Sense::click());
+        p.text(pos2(zr.max.x, zr.center().y), Align2::RIGHT_CENTER, label, Tokens::ui(12.0), if zresp.hovered() { t.text } else { t.text_dim });
+        if zresp.clicked() {
+            app.ui.layer_zoom = None;
+            app.ui.layer_pan = [0.0, 0.0];
+        }
+        app.auto.add("layerPanel.zoom", zr, "Magnification");
+    }
+    // Zoom to `nz` keeping the layer point under `at` in place.
+    let zoom_about = |app: &mut EffectcraftApp, at: Pos2, nz: f64| {
+        let nz = nz.clamp(0.01 / ppp, 32.0 / ppp);
+        let q = to_layer(at);
+        let new_center = at + vec2(((lw / 2.0 - q[0]) * nz) as f32, ((lh / 2.0 - q[1]) * nz) as f32);
+        let pan = new_center - area.center();
+        app.ui.layer_zoom = Some(nz as f32);
+        app.ui.layer_pan = [pan.x, pan.y];
+    };
+    let hover = ui.input(|i| i.pointer.hover_pos()).filter(|hp| area.contains(*hp) && ui.rect_contains_pointer(area));
+    // Scroll wheel (or pinch) zooms around the pointer.
+    if let Some(hp) = hover {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.zoom_delta().ln() * 300.0);
+        if scroll.abs() > 0.1 {
+            zoom_about(app, hp, zoom * ((scroll / 300.0) as f64).exp());
+        }
+    }
+    // Navigation: the Hand tool, a Space-drag or a middle-button drag pans; the Zoom tool zooms.
+    // The pan follows the raw pointer from its press, so it starts on the press frame whichever
+    // tool's widget was under the pointer, and lasts until the button is up (also once Space is
+    // released mid-drag).
+    let pid = egui::Id::new("layer-panel-pan");
+    let (primary, middle, down, at) = ui.input(|i| {
+        (
+            i.pointer.button_pressed(egui::PointerButton::Primary),
+            i.pointer.button_pressed(egui::PointerButton::Middle),
+            i.pointer.any_down(),
+            i.pointer.latest_pos(),
+        )
+    });
+    let hand_tool = app.ui.tool == Tool::Hand || super::space_hand(&ctx);
+    let mut pan: Option<(Pos2, [f32; 2])> = ctx.data(|d| d.get_temp(pid));
+    if pan.is_none()
+        && (middle || (primary && hand_tool))
+        && let Some(hp) = hover
+    {
+        pan = Some((hp, app.ui.layer_pan));
+    }
+    let hand = hand_tool || pan.is_some();
+    if hand || app.ui.tool == Tool::Zoom {
+        let resp = ui.interact(area, egui::Id::new("layer-panel-nav"), Sense::click_and_drag());
+        if let Some(hp) = hover {
+            let lp = to_layer(hp);
+            app.pointer_comp = Some([lp[0] as f32, lp[1] as f32]);
+            ctx.set_cursor_icon(if !hand {
+                egui::CursorIcon::ZoomIn
+            } else if pan.is_some() {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::Grab
+            });
+        }
+        if hand {
+            match pan.filter(|_| down) {
+                Some((press, start)) => {
+                    ctx.data_mut(|d| d.insert_temp(pid, (press, start)));
+                    if let Some(d) = at.map(|a| a - press).filter(|d| d.length_sq() > 0.0) {
+                        // Pin the magnification, so resizing the panel mid-pan doesn't refit it.
+                        app.ui.layer_zoom = Some(zoom as f32);
+                        app.ui.layer_pan = [start[0] + d.x, start[1] + d.y];
+                    }
+                }
+                None => ctx.data_mut(|d| d.remove::<(Pos2, [f32; 2])>(pid)),
+            }
+        } else if resp.clicked()
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            let k = if ui.input(|i| i.modifiers.alt) { 0.5 } else { 2.0 };
+            zoom_about(app, pos, zoom * k);
+        }
+        return;
+    }
 
     // Interaction: Roto Brush / Refine Edge.
     if app.ui.tool.roto_kind(false).is_some() {

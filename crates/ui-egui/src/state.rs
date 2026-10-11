@@ -655,6 +655,12 @@ pub struct UiState {
     /// Layer panel View: number of effects rendered (None = through the last Paint effect).
     #[serde(default)]
     pub layer_view: Option<usize>,
+    /// Layer panel magnification in points per layer pixel (None = fit).
+    #[serde(default)]
+    pub layer_zoom: Option<f32>,
+    /// Layer panel pan offset in points from the centred position.
+    #[serde(default)]
+    pub layer_pan: [f32; 2],
     /// Wiggler / Smoother / Motion Sketch settings.
     #[serde(default)]
     pub anim_tools: AnimToolsState,
@@ -717,6 +723,8 @@ impl Default for UiState {
             tracker_source: None,
             layer_panel: None,
             layer_view: None,
+            layer_zoom: None,
+            layer_pan: [0.0, 0.0],
             anim_tools: AnimToolsState::default(),
             mini_flowchart: None,
             flowchart: Default::default(),
