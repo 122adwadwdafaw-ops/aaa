@@ -712,6 +712,89 @@ fn deleting_time_remap_turns_time_remapping_off() {
     assert_eq!(prop(&s, l, "timeRemap").keys.len(), 1);
 }
 
+/// U (keyframes), the animation reveal and UU (modified) take in Time Remap, which sits at the
+/// top of the layer's tree rather than in a group.
+#[test]
+fn reveal_shortcuts_take_in_time_remap() {
+    let (mut s, l) = precomp_setup();
+    let revealed = |s: &mut Session, kind: &str| -> Vec<u64> {
+        let r = s.execute("anim.reveal", json!({"kind": kind})).unwrap();
+        r["props"].as_array().unwrap().iter().filter(|p| p["layer"] == l).filter_map(|p| p["prop"].as_u64()).collect()
+    };
+    for kind in ["keyframes", "animation", "modified"] {
+        assert!(revealed(&mut s, kind).is_empty(), "{kind}: nothing to reveal before remapping");
+    }
+    s.execute("layer.enableTimeRemap", json!({})).unwrap();
+    let uid = prop(&s, l, "timeRemap").uid;
+    for kind in ["keyframes", "animation", "modified"] {
+        assert_eq!(revealed(&mut s, kind), vec![uid], "{kind}");
+    }
+}
+
+/// UU on a layer nothing was changed on shows nothing, whatever its kind: cameras, lights, text
+/// and nulls have their own Transform defaults, and Separate Dimensions keeps the comp centre.
+#[test]
+fn modified_reveal_is_empty_for_untouched_layers() {
+    let (mut s, solid) = setup();
+    let mut layers = vec![("solid", solid)];
+    for (cmd, params) in [
+        ("layer.newText", json!({"text": "Hi"})),
+        ("layer.newShape", json!({})),
+        ("layer.newNull", json!({})),
+        ("layer.newCamera", json!({})),
+        ("layer.newLight", json!({})),
+        ("layer.newLight", json!({"type": "ambient"})),
+    ] {
+        let r = s.execute(cmd, params.clone()).unwrap_or_else(|e| panic!("{cmd} {params}: {e}"));
+        layers.push((cmd, r["layer"].as_u64().unwrap()));
+    }
+    s.execute("prop.separateDimensions", json!({"layer": solid})).unwrap();
+    for (what, l) in layers {
+        s.execute("layer.select", json!({"layers": [l]})).unwrap();
+        let r = s.execute("anim.reveal", json!({"kind": "modified"})).unwrap();
+        let paths: Vec<String> = r["props"].as_array().unwrap().iter().filter_map(|p| p["prop"].as_u64()).map(|u| path_of(&s, l, u)).collect();
+        assert!(paths.is_empty(), "{what}: {paths:?}");
+    }
+}
+
+/// Match-id path of property or group `uid` of `layer`.
+fn path_of(s: &Session, layer: u64, uid: u64) -> String {
+    let l = s.active_comp().unwrap().layer(effectcraft_project::LayerId(layer)).unwrap();
+    let mut out = String::new();
+    for n in l.props.node_chain(uid).unwrap_or_default() {
+        out.push('/');
+        out.push_str(n.match_id());
+    }
+    out
+}
+
+/// UU takes in static changes outside Transform: Material, Camera and Light Options, a
+/// separated position, and layer styles in full.
+#[test]
+fn modified_reveal_takes_in_options_and_layer_styles() {
+    let (mut s, solid) = setup();
+    let modified = |s: &mut Session, l: u64| -> Vec<String> {
+        s.execute("layer.select", json!({"layers": [l]})).unwrap();
+        let r = s.execute("anim.reveal", json!({"kind": "modified"})).unwrap();
+        r["props"].as_array().unwrap().iter().filter_map(|p| p["prop"].as_u64()).map(|u| path_of(s, l, u)).collect()
+    };
+    s.execute("prop.set", json!({"layer": solid, "path": "materialOptions/diffuse", "value": 80})).unwrap();
+    assert_eq!(modified(&mut s, solid), ["/materialOptions/diffuse"]);
+    s.execute("prop.separateDimensions", json!({"layer": solid})).unwrap();
+    s.execute("prop.set", json!({"layer": solid, "path": "transform/positionX", "value": 10})).unwrap();
+    assert_eq!(modified(&mut s, solid), ["/transform/positionX", "/materialOptions/diffuse"]);
+    s.execute("layer.style.dropShadow", json!({"layers": [solid]})).unwrap();
+    assert!(modified(&mut s, solid).contains(&"/layerStyles/dropShadow".to_string()), "{:?}", modified(&mut s, solid));
+
+    let cam = s.execute("layer.newCamera", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("prop.set", json!({"layer": cam, "path": "cameraOptions/blurLevel", "value": 50})).unwrap();
+    s.execute("prop.set", json!({"layer": cam, "path": "transform/rotation", "value": 15})).unwrap();
+    assert_eq!(modified(&mut s, cam), ["/transform/rotation", "/cameraOptions/blurLevel"]);
+    let light = s.execute("layer.newLight", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("prop.set", json!({"layer": light, "path": "lightOptions/intensity", "value": 40})).unwrap();
+    assert_eq!(modified(&mut s, light), ["/lightOptions/intensity"]);
+}
+
 /// Enable Time Remapping on a layer extended past its source's end (its last frame frozen) puts
 /// the end key at the source's end, not at the extended out point (#290).
 #[test]
