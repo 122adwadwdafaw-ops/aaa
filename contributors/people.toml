@@ -54,3 +54,8 @@ sync_github_name = false
 real_name = "Vikram Bhaskaran"
 display_name = "Vikram Bhaskaran"
 sync_github_name = false
+
+[people.ViolinMai]
+real_name = "MAI"
+display_name = "ViolinMai"
+sync_github_name = false
