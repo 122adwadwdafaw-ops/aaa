@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 
 use effectcraft_engine::project::{Comp, ItemId, ItemKind, LayerSource, Node, Project, PropGroup};
 use effectcraft_engine::render::disk_cache::{self, DiskCache};
-use effectcraft_engine::render::{ExprHost, FootageSource, LayerCache, RenderOpts, Renderer};
+use effectcraft_engine::render::{CancellableFootage, ExprHost, FootageSource, LayerCache, RenderOpts, Renderer};
 use effectcraft_engine::time::Tick;
 use effectcraft_gpu::{DisplayFrame, Gpu};
 use rayon::prelude::*;
@@ -109,6 +109,38 @@ impl std::hash::Hash for FrameKey {
     }
 }
 
+/// Where a playing preview is and what it plays next (see [`Frames::set_playhead`]): the RAM
+/// preview renders the frames it reaches first before later ones, and keeps them over frames it
+/// reaches later or not at all (#595).
+#[derive(Clone, Copy, Debug)]
+pub struct Playhead {
+    /// The frame series that plays ([`FrameKey::same_series`]; its `frame` is ignored).
+    pub series: FrameKey,
+    /// The frame on screen.
+    pub cur: i64,
+    /// The preview's range, skip step and looping (as in its `PreviewPlan`).
+    pub start: i64,
+    pub end: i64,
+    pub step: i64,
+    pub looping: bool,
+}
+
+impl Playhead {
+    /// How many frames the preview shows before it reaches `k` (0: on screen); `None` for
+    /// frames it doesn't reach (other series, outside the range, behind it without looping).
+    pub fn ahead(&self, k: &FrameKey) -> Option<i64> {
+        if !k.same_series(&self.series) || k.frame < self.start || k.frame > self.end {
+            return None;
+        }
+        let step = self.step.max(1);
+        if k.frame >= self.cur {
+            return Some((k.frame - self.cur) / step);
+        }
+        // Looping: through the end of the range and around from its start.
+        self.looping.then(|| (self.end.saturating_sub(self.cur) / step).saturating_add(1).saturating_add((k.frame - self.start) / step))
+    }
+}
+
 struct Cache {
     map: HashMap<FrameKey, FrameImage>,
     order: VecDeque<FrameKey>,
@@ -118,6 +150,8 @@ struct Cache {
     budget: usize,
     /// Bytes of GPU frames to keep at most ([`GPU_BUDGET`]).
     gpu_budget: usize,
+    /// The playing preview, if any: evictions spare the frames it shows next.
+    playhead: Option<Playhead>,
 }
 
 impl Cache {
@@ -132,11 +166,25 @@ impl Cache {
         if gpu {
             self.gpu_bytes += sz;
         }
-        while self.bytes > self.budget {
-            let Some(old) = self.order.pop_front() else { break };
-            self.remove(&old);
-        }
+        self.evict_to_budget();
         self.evict_gpu();
+    }
+    /// The frame to evict next: the least recently shown, but while a preview plays, the least
+    /// recently shown of the frames it doesn't reach, then the one it reaches last. Plain LRU
+    /// evicted the frames just ahead of the playhead first (rendered a while ago, not shown yet)
+    /// to keep the ones just shown, so a preview longer than the cache played into a gap that
+    /// prefetch kept refilling while it evicted the next frames (#595).
+    fn victim(&self) -> Option<usize> {
+        let Some(p) = &self.playhead else { return (!self.order.is_empty()).then_some(0) };
+        let mut farthest: Option<(i64, usize)> = None;
+        for (i, k) in self.order.iter().enumerate() {
+            match p.ahead(k) {
+                None => return Some(i),
+                Some(d) if farthest.is_none_or(|(f, _)| d > f) => farthest = Some((d, i)),
+                Some(_) => {}
+            }
+        }
+        farthest.map(|(_, i)| i)
     }
     /// Video memory: drop the oldest GPU frames past their own budget.
     fn evict_gpu(&mut self) {
@@ -181,7 +229,7 @@ impl Cache {
     }
     fn evict_to_budget(&mut self) {
         while self.bytes > self.budget {
-            let Some(old) = self.order.pop_front() else { break };
+            let Some(old) = self.victim().and_then(|i| self.order.remove(i)) else { break };
             self.remove(&old);
         }
     }
@@ -388,7 +436,7 @@ impl Default for Frames {
         #[cfg(not(target_arch = "wasm32"))]
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 16);
         Frames {
-            cache: Arc::new(Mutex::new(Cache { map: HashMap::new(), order: VecDeque::new(), bytes: 0, gpu_bytes: 0, budget: 3 << 30, gpu_budget: GPU_BUDGET })),
+            cache: Arc::new(Mutex::new(Cache { map: HashMap::new(), order: VecDeque::new(), bytes: 0, gpu_bytes: 0, budget: 3 << 30, gpu_budget: GPU_BUDGET, playhead: None })),
             inflight: Arc::new(Mutex::new(HashSet::new())),
             queue: Arc::new(Mutex::new(Queue::default())),
             #[cfg(not(target_arch = "wasm32"))]
@@ -460,11 +508,27 @@ pub fn fit_texture(img: egui::ColorImage, max_side: usize) -> egui::ColorImage {
 
 /// [`fit_texture`] averaging down by at least `min_k` (see [`fit_factor`]).
 pub fn fit_texture_by(img: egui::ColorImage, max_side: usize, min_k: usize) -> egui::ColorImage {
-    let [w, h] = img.size;
     let k = fit_factor(img.size, max_side, min_k);
     if k == 1 {
         return img;
     }
+    average_down(&img, k)
+}
+
+/// A shared frame as texture data (see [`fit_texture_by`]): the frame itself when it needs no
+/// averaging, without copying its pixels. The viewer puts every frame a preview shows on screen;
+/// copying a 4K frame first held the UI thread for about a millisecond each time (#595).
+pub fn fit_shared_texture_by(img: &Arc<egui::ColorImage>, max_side: usize, min_k: usize) -> egui::ImageData {
+    let k = fit_factor(img.size, max_side, min_k);
+    if k == 1 {
+        return egui::ImageData::Color(img.clone());
+    }
+    average_down(img, k).into()
+}
+
+/// `img` averaged down by `k` (rounded up at the edges).
+fn average_down(img: &egui::ColorImage, k: usize) -> egui::ColorImage {
+    let [w, h] = img.size;
     let (fw, fh) = (w.div_ceil(k), h.div_ceil(k));
     let px: Vec<egui::Color32> = (0..fw * fh)
         .into_par_iter()
@@ -712,6 +776,26 @@ impl Frames {
         }
     }
 
+    /// The playing preview's position (`None` when no preview plays): prefetch renders the
+    /// frames it reaches first before the others, evictions spare the frames it shows next, and
+    /// queued prefetch frames of its series it no longer reaches are dropped (#595).
+    pub fn set_playhead(&self, playhead: Option<Playhead>) {
+        if let Ok(mut c) = self.cache.lock() {
+            c.playhead = playhead;
+        }
+        let Ok(mut q) = self.queue.lock() else { return };
+        q.playhead = playhead;
+        let Some(p) = playhead else { return };
+        let Ok(mut inf) = self.inflight.lock() else { return };
+        q.jobs.retain(|j| {
+            let gone = !j.urgent && j.key.same_series(&p.series) && p.ahead(&j.key).is_none();
+            if gone {
+                inf.remove(&j.key);
+            }
+            !gone
+        });
+    }
+
     /// Queue a prefetch frame (no-op if cached or already queued/rendering).
     pub fn request(&self, src: &RenderSource, key: FrameKey, comp: ItemId, t: Tick, opts: RenderOpts) {
         self.request_with(src, key, comp, t, opts, false);
@@ -756,13 +840,22 @@ impl Frames {
             for j in q.jobs.iter_mut() {
                 j.urgent = j.key == key;
             }
+            // The comp's viewer frames of other times that are rendering are called off too: a
+            // movie seeking for each of them held the decoder the frame under the pointer
+            // waited for, so it came seconds after the pointer stopped (#329). Another revision
+            // of the same frame (a live edit) finishes, as the viewer shows it meanwhile.
+            for (k, cancel) in &q.urgent_cancels {
+                if k.comp == key.comp && k.frame != key.frame {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            }
         }
         if !inf.insert(key) {
             return;
         }
         q.seq += 1;
         let seq = q.seq;
-        q.jobs.push(Job { key, src: src.clone(), comp, t, opts, urgent, seq });
+        q.jobs.push(Job { key, src: src.clone(), comp, t, opts, urgent, seq, cancel: Arc::default() });
         drop(inf);
         drop(q);
         #[cfg(not(target_arch = "wasm32"))]
@@ -835,7 +928,7 @@ impl Frames {
             }
             let job = {
                 let Ok(mut q) = self.queue.lock() else { break };
-                let Some(i) = Queue::best(&q.jobs) else { break };
+                let Some(i) = q.best() else { break };
                 let job = q.jobs.swap_remove(i);
                 q.running.insert(job.key);
                 if job.urgent {
@@ -963,11 +1056,12 @@ impl Worker {
         let Worker { queue, content_keys, .. } = self;
         let job = {
             let Ok(mut q) = queue.lock() else { return false };
-            let Some(i) = Queue::best(&q.jobs) else { return false };
+            let Some(i) = q.best() else { return false };
             let job = q.jobs.swap_remove(i);
             q.running.insert(job.key);
             if job.urgent {
                 q.urgent_running += 1;
+                q.urgent_cancels.push((job.key, job.cancel.clone()));
             }
             job
         };
@@ -977,10 +1071,11 @@ impl Worker {
         let disk_hit = from_disk.is_some();
         let ci = match from_disk {
             Some(f) => FrameImage::Cpu(Arc::new(egui::ColorImage::from_rgba_premultiplied([f.width as usize, f.height as usize], &f.rgba))),
-            None => match self.render_guarded(&job) {
+            None => match self.render_guarded(&job).filter(|_| !job.cancel.load(Ordering::Relaxed)) {
                 Some(ci) => ci,
+                // Called off (frames it read may be missing) or failed: not cached, and not
+                // "in progress" forever: the viewer asks for it again.
                 None => {
-                    // Not "in progress" forever: the viewer asks for it again.
                     self.release(job.key, job.urgent);
                     return true;
                 }
@@ -1025,6 +1120,9 @@ impl Worker {
             q.running.remove(&key);
             if urgent {
                 q.urgent_running = q.urgent_running.saturating_sub(1);
+                if let Some(i) = q.urgent_cancels.iter().position(|(k, _)| *k == key) {
+                    q.urgent_cancels.swap_remove(i);
+                }
             }
         }
         if let Some(ctx) = &self.ctx {
@@ -1061,7 +1159,8 @@ impl Worker {
             return None;
         }
         let g = job.src.gpu.as_ref()?;
-        let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
+        let footage = job.footage();
+        let mut r = Renderer::new(&job.src.project, &footage, job.opts);
         r.expr = job.src.expr.as_deref();
         r.cache = Some(&job.src.layer_cache);
         r.accel = Some(g as &dyn effectcraft_engine::render::Accelerator);
@@ -1077,7 +1176,8 @@ impl Worker {
 
     /// Render a frame; `gpu: false` keeps it off the GPU compositor.
     fn render_job(&self, job: &Job, gpu: bool) -> FrameImage {
-        let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
+        let footage = job.footage();
+        let mut r = Renderer::new(&job.src.project, &footage, job.opts);
         r.expr = job.src.expr.as_deref();
         let gpu_allowed = gpu && !self.gpu_retired.load(Ordering::Acquire);
         // A failed GPU attempt may have populated intermediate entries before its scope
@@ -1149,6 +1249,15 @@ struct Job {
     opts: RenderOpts,
     urgent: bool,
     seq: u64,
+    /// Set when the viewer no longer waits for this frame (see [`Frames::request_urgent`]).
+    cancel: Arc<AtomicBool>,
+}
+
+impl Job {
+    /// The footage this job's render reads, called off with the job.
+    fn footage(&self) -> CancellableFootage<'_> {
+        CancellableFootage { inner: self.src.footage.as_ref(), cancel: self.cancel.clone() }
+    }
 }
 
 #[derive(Default)]
@@ -1156,13 +1265,28 @@ struct Queue {
     jobs: Vec<Job>,
     running: HashSet<FrameKey>,
     urgent_running: usize,
+    /// The running viewer (urgent) frames and how to call them off.
+    urgent_cancels: Vec<(FrameKey, Arc<AtomicBool>)>,
     seq: u64,
+    /// The playing preview, if any: its prefetch renders nearest first.
+    playhead: Option<Playhead>,
 }
 
 impl Queue {
-    /// The job that matters most: urgent first (newest), then prefetch in request order.
-    fn best(jobs: &[Job]) -> Option<usize> {
-        jobs.iter().enumerate().max_by_key(|(_, j)| (j.urgent, if j.urgent { j.seq as i64 } else { -(j.seq as i64) })).map(|(i, _)| i)
+    /// The job that matters most: urgent first (newest), then, while a preview plays, the
+    /// prefetch frame it reaches first, then prefetch in request order. In request order alone,
+    /// frames asked for again after an eviction (the ones right ahead of the playhead) waited
+    /// behind every frame further ahead (#595).
+    fn best(&self) -> Option<usize> {
+        let p = self.playhead.as_ref();
+        self.jobs
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, j)| {
+                let near = if j.urgent { None } else { p.and_then(|p| p.ahead(&j.key)) };
+                (j.urgent, near.is_some(), near.map_or(0, |d| -d), if j.urgent { j.seq as i64 } else { -(j.seq as i64) })
+            })
+            .map(|(i, _)| i)
     }
 }
 
@@ -1341,6 +1465,94 @@ mod tests {
         assert_eq!(footage.deepest.load(Ordering::SeqCst), 1, "renders nested on a waiting thread");
     }
 
+    /// #329: scrubbing a long movie, the viewer frame of every step the pointer passed started
+    /// rendering and seeked the movie's decoder in turn; the frame under the pointer waited for
+    /// all of them. A newer viewer frame of another time calls off the one rendering, which is
+    /// not cached (its footage may be missing).
+    #[test]
+    fn a_newer_viewer_frame_calls_off_the_one_rendering() {
+        use effectcraft_engine::Session;
+        use effectcraft_engine::project::{Footage, FootageKind};
+        use effectcraft_engine::render::Image;
+        use effectcraft_engine::time::FrameRate;
+        use serde_json::json;
+        use std::cell::RefCell;
+        thread_local! {
+            static CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+        }
+        /// A movie whose first frames take a long seek, which a called-off read gives up.
+        #[derive(Default)]
+        struct Seeking {
+            seeking: AtomicBool,
+            called_off: AtomicBool,
+        }
+        impl FootageSource for Seeking {
+            fn cancellable(&self, cancel: &Arc<AtomicBool>, f: &mut dyn FnMut()) {
+                let prev = CANCEL.replace(Some(cancel.clone()));
+                f();
+                CANCEL.set(prev);
+            }
+            fn frame(&self, _: ItemId, _: &Footage, t: Tick) -> Option<Arc<Image>> {
+                if t < Tick::from_seconds_f64(0.25) {
+                    self.seeking.store(true, Ordering::SeqCst);
+                    for _ in 0..1000 {
+                        if CANCEL.with_borrow(|c| c.as_ref().is_some_and(|c| c.load(Ordering::SeqCst))) {
+                            self.called_off.store(true, Ordering::SeqCst);
+                            return None;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+                Some(Arc::new(Image::new(4, 4)))
+            }
+        }
+        let mut s = Session::default();
+        let cid = ItemId(s.execute("comp.new", json!({"name": "A", "width": 8, "height": 8, "duration": 10})).unwrap()["comp"].as_u64().unwrap());
+        let clip = Footage {
+            kind: FootageKind::Video,
+            width: 4,
+            height: 4,
+            has_video: true,
+            frame_rate: FrameRate::FPS_30,
+            duration: Tick::from_seconds_f64(10.0),
+            ..Default::default()
+        };
+        let item = Arc::make_mut(&mut s.project).add_item("clip.mov", Default::default(), None, ItemKind::Footage(clip));
+        s.execute("layer.addItem", json!({"item": item.0})).unwrap();
+        let footage = Arc::new(Seeking::default());
+        let src = RenderSource {
+            project: s.project.clone(),
+            footage: footage.clone(),
+            expr: None,
+            layer_cache: Arc::default(),
+            gpu: None,
+            gpu_display: false,
+            disk: None,
+        };
+        let f = Frames::default();
+        let content = f.content_of(&s.project, s.revision, cid);
+        let key = |frame| FrameKey { revision: s.revision, content, comp: cid.0, frame, scale: 1000, view: 0, opts: 0 };
+        f.request_urgent(&src, key(0), cid, Tick::ZERO, RenderOpts::default());
+        for _ in 0..1000 {
+            if footage.seeking.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(footage.seeking.load(Ordering::SeqCst), "the first frame's render reached the footage");
+        f.request_urgent(&src, key(150), cid, FrameRate::FPS_30.tick_of(150), RenderOpts::default());
+        for _ in 0..1000 {
+            if f.inflight() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(footage.called_off.load(Ordering::SeqCst), "the superseded frame's seek ran on");
+        assert!(f.is_cached(&key(150)), "the newest frame rendered");
+        assert!(!f.is_cached(&key(0)), "a called-off frame is not cached");
+        assert_eq!(f.inflight(), 0, "released");
+    }
+
     /// #284: scrubbing asks for a viewer frame at every step; a newer one drops the comp's viewer
     /// frames still waiting (they would all render first), but not prefetch frames or another
     /// comp's viewer frame.
@@ -1404,6 +1616,80 @@ mod tests {
         insert(&f, key(1, 3, 0));
         assert!(f.is_cached(&key(1, 0, 0)) && !f.is_cached(&key(1, 1, 0)));
         assert!(f.is_cached(&key(1, 2, 0)) && f.is_cached(&key(1, 3, 0)));
+    }
+
+    fn playhead(cur: i64, looping: bool) -> Playhead {
+        Playhead { series: key(1, 0, 0), cur, start: 0, end: 99, step: 1, looping }
+    }
+
+    /// #595: a playing preview's cache is full. The frames just ahead of the playhead were
+    /// rendered before the ones just shown, so plain LRU evicted them first and the preview
+    /// played into a gap. Frames the preview no longer reaches go first, then the ones it
+    /// reaches last.
+    #[test]
+    fn a_full_cache_keeps_the_frames_just_ahead_of_the_playhead() {
+        let f = Frames::default();
+        f.set_budget(4 * 16);
+        // Prefetch rendered 11..=13, then 10 was shown (the most recently used).
+        for i in [11, 12, 13, 10] {
+            insert(&f, key(1, i, 0));
+        }
+        let cached = |f: &Frames| f.cached_frames(&key(1, 0, 0));
+        f.set_playhead(Some(playhead(10, false)));
+        // The next frame rendered is the one the preview reaches last: the frames just ahead stay.
+        insert(&f, key(1, 14, 0));
+        assert_eq!(cached(&f), [10, 11, 12, 13]);
+        // Without looping, a frame behind the playhead goes before any frame ahead of it.
+        f.set_playhead(Some(playhead(12, false)));
+        insert(&f, key(1, 14, 0));
+        assert_eq!(cached(&f), [10, 12, 13, 14]);
+        // Looping, the frame just behind is the one reached last.
+        f.set_playhead(Some(playhead(13, true)));
+        insert(&f, key(1, 0, 0));
+        assert_eq!(cached(&f), [0, 10, 13, 14]);
+        // Stopped: least recently shown first again.
+        f.set_playhead(None);
+        insert(&f, key(1, 50, 0));
+        assert!(!f.is_cached(&key(1, 13, 0)) && f.is_cached(&key(1, 50, 0)));
+    }
+
+    /// #595: prefetch renders the frames the preview reaches first, whatever order they were
+    /// asked for in (a frame evicted and asked for again waited behind every frame further
+    /// ahead); queued frames the preview no longer reaches are dropped and not left in flight.
+    #[test]
+    fn prefetch_renders_the_frames_the_playhead_reaches_first() {
+        struct Idle;
+        impl RemoteFrames for Idle {
+            fn slots(&self) -> usize {
+                0
+            }
+            fn start(&self, _: RemoteJob, _: RemoteDone) {}
+        }
+        let mut f = Frames::default();
+        f.set_remote(Some(Arc::new(Idle)));
+        let src = RenderSource {
+            project: Arc::default(),
+            footage: Arc::new(effectcraft_engine::render::NoFootage),
+            expr: None,
+            layer_cache: Arc::default(),
+            gpu: None,
+            gpu_display: false,
+            disk: None,
+        };
+        for frame in [40, 30, 20, 5, 12, 11] {
+            f.request(&src, key(1, frame, 0), ItemId(1), Tick::ZERO, RenderOpts::default());
+        }
+        f.request(&src, FrameKey { comp: 2, ..key(1, 1, 0) }, ItemId(2), Tick::ZERO, RenderOpts::default());
+        f.set_playhead(Some(playhead(10, false)));
+        let mut order = vec![];
+        loop {
+            let mut q = f.queue.lock().unwrap();
+            let Some(i) = q.best() else { break };
+            let j = q.jobs.swap_remove(i);
+            order.push((j.key.comp, j.key.frame));
+        }
+        assert_eq!(order, [(1, 11), (1, 12), (1, 20), (1, 30), (1, 40), (2, 1)]);
+        assert_eq!(f.inflight(), 6, "frame 5, behind the playhead, is no longer in flight");
     }
 
     #[test]
