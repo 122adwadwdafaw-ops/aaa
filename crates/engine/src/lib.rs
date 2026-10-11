@@ -987,6 +987,10 @@ impl Session {
         upgrade_effects(&mut p);
         self.epoch = self.epoch.wrapping_add(1);
         self.project = Arc::new(p);
+        // The old document's rendered layers and host GPU caches must not survive reopening
+        // a project (#591).
+        self.layer_cache.clear();
+        self.events.push(Event::PurgeCaches);
         self.history = History::default();
         self.state = EditorState { snapping: true, view_layout: 1, ..Default::default() };
         self.path = path;
