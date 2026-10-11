@@ -5,8 +5,9 @@
 //! The prompt is the **Object Point** (layer pixels) and, with **Use Box**, a box around the
 //! object. On the **Reference Frame** it is segmented by the same engine as Roto Brush: the
 //! trained model chosen in Settings ▸ Roto Brush (MobileSAM, `effectcraft_segment`) when one is
-//! installed, the classical graph cut otherwise (the point is a foreground stroke, the box's
-//! edges, or without a box the layer's border, background strokes). With **Track Object** the
+//! installed, the classical graph cut otherwise. The model gets the point as a foreground point
+//! and the box as its box prompt; the graph cut gets the point as a foreground stroke and the
+//! box's edges (without a box, the layer's border) as background strokes. With **Track Object** the
 //! matte is then carried frame by frame up to **Frames Before** / **Frames After** away (optical
 //! flow, re-segmented by the model prompted with the carried matte); without it every frame is
 //! segmented on its own from the prompt (useful when the point is animated).
@@ -15,8 +16,12 @@
 //! ([`crate::roto::cached`]): the chain seed holds the engine-maintained Input Key (what the
 //! frames are made of), the layer size, the frame rate, the mode and the model, and every
 //! frame's key the prompt, so edits upstream or to the prompt recompute it and undo never sees a
-//! stale matte. **Feather**, **Contrast** and **Shift Edge** shape the matte, **Invert** keeps
-//! everything but the object and **View ▸ Matte** shows the matte in grey.
+//! stale matte. The engine fills that cache in a background job (`objectMatte.propagate`,
+//! outward from the reference frame over [`job_frames`]) and **Freeze** (`objectMatte.freeze`)
+//! stores the final mattes in the hidden **Frozen** parameter ([`FrozenCache`], as Roto Brush
+//! does): they are used, without segmenting, while [`frozen_key`] still matches. **Feather**,
+//! **Contrast** and **Shift Edge** shape the matte, **Invert** keeps everything but the object
+//! and **View ▸ Matte** shows the matte in grey.
 
 use std::sync::Arc;
 
@@ -25,10 +30,10 @@ use effectcraft_project::ParamUi;
 use effectcraft_raster::Image;
 use effectcraft_segment::MaskModel;
 use effectcraft_track::roto::refine::MatteParams;
-use effectcraft_track::roto::{RotoData, SegOpts, Stroke, StrokeKind};
+use effectcraft_track::roto::{FrameSeg, RotoData, SegOpts, Stroke, StrokeKind, rle};
 use rayon::prelude::*;
 
-use crate::roto::{self, Chain, INPUT_KEY};
+use crate::roto::{self, Chain, FROZEN, FrozenCache, INPUT_KEY};
 use crate::warp_stab::param;
 use crate::{Buf, EffectCtx, EffectSpec, Params, num, p, popup, slider};
 
@@ -70,6 +75,7 @@ pub fn specs() -> Vec<EffectSpec> {
             p("invert", "Invert", Value::Bool(false), ParamUi::Checkbox),
             p("view", "View", Value::Enum(0), popup(&VIEWS)),
             p(INPUT_KEY, "Input Key", Value::Str(String::new()), ParamUi::Hidden),
+            p(FROZEN, "Frozen", Value::Str(String::new()), ParamUi::Hidden),
         ],
         render,
         gpu: false,
@@ -112,6 +118,11 @@ pub fn reference_frame(params: &Params) -> i64 {
     frames(params, "objectTracking/referenceFrame", -1e9, 1e9)
 }
 
+/// Frames Before / After (finite, clamped to `0..=MAX_REACH`).
+pub fn reach(params: &Params) -> [i64; 2] {
+    [frames(params, "objectTracking/framesBefore", 0.0, MAX_REACH), frames(params, "objectTracking/framesAfter", 0.0, MAX_REACH)]
+}
+
 /// Whether the matte is carried from the reference frame (else every frame is segmented on its
 /// own).
 pub fn tracks(params: &Params) -> bool {
@@ -119,9 +130,10 @@ pub fn tracks(params: &Params) -> bool {
 }
 
 /// The prompt as Roto Brush strokes on layer frame `frame`: the Object Point as a foreground
-/// stroke; the box's edges as background strokes; without a box, the layer's border when there
-/// is no model (the graph cut needs background samples; a model does not, and a border stroke
-/// would cut objects touching the frame edge). `None` when the point is unusable.
+/// stroke; the box as a box stroke (the model's box prompt) with a model, its edges as
+/// background strokes for the graph cut without one; without a box, the layer's border when
+/// there is no model (the graph cut needs background samples; a model does not, and a border
+/// stroke would cut objects touching the frame edge). `None` when the point is unusable.
 pub fn prompt_strokes(params: &Params, layer_size: [f64; 2], frame: i64, with_model: bool) -> Option<Vec<Stroke>> {
     let [w, h] = layer_size;
     if !(w.is_finite() && h.is_finite() && w >= 1.0 && h >= 1.0) {
@@ -144,7 +156,12 @@ pub fn prompt_strokes(params: &Params, layer_size: [f64; 2], frame: i64, with_mo
             if pt[0] - m <= x0 || pt[0] + m >= x1 || pt[1] - m <= y0 || pt[1] + m >= y1 {
                 return None;
             }
-            out.push(Stroke { kind: StrokeKind::Bg, frame, radius: EDGE_RADIUS, points: rect(x0, y0, x1, y1) });
+            out.push(if with_model {
+                // The model takes the box itself as its box prompt.
+                Stroke { kind: StrokeKind::Box, frame, radius: 0.0, points: vec![[x0, y0], [x1, y1]] }
+            } else {
+                Stroke { kind: StrokeKind::Bg, frame, radius: EDGE_RADIUS, points: rect(x0, y0, x1, y1) }
+            });
         }
         None if !with_model => {
             let i = EDGE_RADIUS;
@@ -163,8 +180,7 @@ pub fn prompt_strokes(params: &Params, layer_size: [f64; 2], frame: i64, with_mo
 pub fn roto_data(params: &Params, layer_size: [f64; 2], f: i64, with_model: bool) -> Option<RotoData> {
     if tracks(params) {
         let base = reference_frame(params);
-        let before = frames(params, "objectTracking/framesBefore", 0.0, MAX_REACH);
-        let after = frames(params, "objectTracking/framesAfter", 0.0, MAX_REACH);
+        let [before, after] = reach(params);
         let strokes = prompt_strokes(params, layer_size, base, with_model)?;
         Some(RotoData { base: Some(base), span: [base.saturating_sub(before), base.saturating_add(after)], strokes })
     } else {
@@ -184,6 +200,127 @@ pub fn seed(params: &Params, layer_size: [f64; 2], fps: f64, model: Option<&dyn 
     fnv(&mut h, &[tracks(params) as u8]);
     fnv(&mut h, model.map_or(effectcraft_segment::CLASSICAL, |m| m.info().id).as_bytes());
     h
+}
+
+/// The layer frames a background job computes, outward from the reference frame: the tracked
+/// span (Frames Before / After around it), clipped to `limits` (the layer's frames). Without
+/// Track Object, the same frames, each segmented on its own.
+pub fn job_frames(params: &Params, limits: [i64; 2]) -> Vec<i64> {
+    let base = reference_frame(params);
+    let [before, after] = reach(params);
+    let (lo, hi) = (base.saturating_sub(before).max(limits[0]), base.saturating_add(after).min(limits[1]));
+    if base < limits[0] || base > limits[1] {
+        return vec![];
+    }
+    let mut v = vec![base];
+    v.extend(base.saturating_add(1)..=hi);
+    v.extend((lo..base).rev());
+    v
+}
+
+/// The segmentation chain the matte of layer frame `f` comes from (`None`: no usable prompt).
+pub fn chain(params: &Params, layer_size: [f64; 2], fps: f64, f: i64, scale: f64, model: Option<Arc<dyn MaskModel>>) -> Option<Chain> {
+    let data = roto_data(params, layer_size, f, model.is_some())?;
+    let keys = data.chain_keys(seed(params, layer_size, fps, model.as_deref()));
+    Some(Chain { data: Arc::new(data), keys, opts: seg_opts(scale), refine_radius: 0.0, model })
+}
+
+/// Frame `f`'s segmentation at full resolution, computing what is missing (the background
+/// job's step). `None` outside the tracked span, without a prompt, or when cancelled.
+pub fn ensure(
+    params: &Params,
+    layer_size: [f64; 2],
+    fps: f64,
+    f: i64,
+    model: Option<Arc<dyn MaskModel>>,
+    frame: &mut dyn FnMut(i64) -> Option<Arc<Image>>,
+    cancel: &dyn Fn() -> bool,
+) -> Option<Arc<FrameSeg>> {
+    let ch = chain(params, layer_size, fps, f, 1.0, model)?;
+    if !ch.data.in_span(f) {
+        return None;
+    }
+    ch.ensure(f, frame, cancel)
+}
+
+/// The chain key of each of `frames` (what a computed segmentation is cached under).
+pub fn frame_keys(params: &Params, layer_size: [f64; 2], fps: f64, frames: &[i64], model: Option<Arc<dyn MaskModel>>) -> Vec<(i64, u64)> {
+    if tracks(params) {
+        let Some(ch) = chain(params, layer_size, fps, 0, 1.0, model) else { return vec![] };
+        return frames.iter().filter_map(|f| Some((*f, *ch.keys.get(f)?))).collect();
+    }
+    frames.iter().filter_map(|f| Some((*f, *chain(params, layer_size, fps, *f, 1.0, model.clone())?.keys.get(f)?))).collect()
+}
+
+/// What frozen mattes depend on: what the frames are (the seed: Input Key, size, rate, mode,
+/// model), the prompt, the tracked span and the matte settings.
+pub fn frozen_key(params: &Params, layer_size: [f64; 2], fps: f64, model: Option<&dyn MaskModel>) -> String {
+    let mut h = seed(params, layer_size, fps, model);
+    let base = reference_frame(params);
+    if let Some(st) = prompt_strokes(params, layer_size, base, model.is_some()) {
+        fnv(&mut h, serde_json::to_string(&st).unwrap_or_default().as_bytes());
+    }
+    for v in [base, reach(params)[0], reach(params)[1]] {
+        fnv(&mut h, &v.to_le_bytes());
+    }
+    fnv(&mut h, format!("{:?}", matte_params(params)).as_bytes());
+    format!("{h:016x}")
+}
+
+/// Whether the instance is frozen (has frozen mattes).
+pub fn is_frozen(params: &Params) -> bool {
+    !s(params, FROZEN).is_empty()
+}
+
+/// Frame `f`'s frozen matte on a `w`×`h` grid, when the instance is frozen, the mattes still
+/// match ([`frozen_key`]) and `f` is one of them.
+pub fn frozen_alpha(params: &Params, layer_size: [f64; 2], fps: f64, f: i64, w: usize, h: usize, model: Option<&dyn MaskModel>) -> Option<Vec<f32>> {
+    let j = s(params, FROZEN);
+    if j.is_empty() {
+        return None;
+    }
+    let fc = frozen_cache(j)?;
+    if fc.key != frozen_key(params, layer_size, fps, model) {
+        return None;
+    }
+    let fr = fc.frames.get(&f)?;
+    let a = rle::decode(&fr.a)?;
+    let [fw, fh] = fc.size;
+    if fw == 0 || fh == 0 || a.len() != fw.checked_mul(fh)? {
+        return None;
+    }
+    let af: Vec<f32> = a.iter().map(|v| *v as f32 / 255.0).collect();
+    if fw == w && fh == h {
+        return Some(af);
+    }
+    let mut out = vec![0.0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let (sx, sy) = ((x as f64 + 0.5) * fw as f64 / w as f64, (y as f64 + 0.5) * fh as f64 / h as f64);
+            out[y * w + x] = effectcraft_track::roto::matting::sample(&af, fw, fh, sx, sy);
+        }
+    }
+    Some(out)
+}
+
+/// The parsed Frozen parameter (parsed once per content).
+fn frozen_cache(j: &str) -> Option<Arc<FrozenCache>> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static C: OnceLock<Mutex<HashMap<u64, Arc<FrozenCache>>>> = OnceLock::new();
+    let mut h = 0xcbf2_9ce4_8422_2325;
+    fnv(&mut h, j.as_bytes());
+    let c = C.get_or_init(Default::default);
+    if let Some(d) = c.lock().unwrap_or_else(|e| e.into_inner()).get(&h) {
+        return Some(d.clone());
+    }
+    let d = Arc::new(FrozenCache::from_json(j)?);
+    let mut m = c.lock().unwrap_or_else(|e| e.into_inner());
+    if m.len() > 8 {
+        m.clear();
+    }
+    m.insert(h, d.clone());
+    Some(d)
 }
 
 /// Segmentation settings at `scale` (Roto Brush's defaults).
@@ -231,12 +368,10 @@ pub fn frame_matte(
     frame: &mut dyn FnMut(i64) -> Option<Arc<Image>>,
     cancel: &dyn Fn() -> bool,
 ) -> FrameMatte {
-    let Some(data) = roto_data(params, layer_size, f, model.is_some()) else { return FrameMatte::NoPrompt };
-    if !data.in_span(f) {
+    let Some(chain) = chain(params, layer_size, fps, f, scale, model) else { return FrameMatte::NoPrompt };
+    if !chain.data.in_span(f) {
         return FrameMatte::Outside;
     }
-    let keys = data.chain_keys(seed(params, layer_size, fps, model.as_deref()));
-    let chain = Chain { data: Arc::new(data), keys, opts: seg_opts(scale), refine_radius: 0.0, model };
     let Some(seg) = chain.ensure(f, frame, cancel) else { return FrameMatte::Outside };
     let (w, h) = (img.width as usize, img.height as usize);
     let seg = if seg.w == w && seg.h == h { (*seg).clone() } else { roto::resample(&seg, w, h) };
@@ -264,7 +399,12 @@ fn render(ctx: &EffectCtx, buf: Buf) -> Buf {
         let im = roto::layer_grid(&other, layer_size);
         (im.width as usize == w && im.height as usize == h).then(|| Arc::new(im))
     };
-    let alpha = match frame_matte(ctx.params, layer_size, fps, f, sc, &img, roto::installed_model(), &mut frame, &|| false) {
+    let model = roto::installed_model();
+    // Frozen mattes are used as they are (no segmentation).
+    if let Some(a) = frozen_alpha(ctx.params, layer_size, fps, f, w, h, model.as_deref()) {
+        return compose(&buf, Some(&a), w, h, b(ctx.params, "invert"), param(ctx.params, "view").map(Value::as_enum).unwrap_or(0) == 1);
+    }
+    let alpha = match frame_matte(ctx.params, layer_size, fps, f, sc, &img, model, &mut frame, &|| false) {
         FrameMatte::Alpha(a) if a.len() == w * h => Some(a),
         FrameMatte::NoPrompt => return buf,
         _ => None,
@@ -438,6 +578,8 @@ mod tests {
     #[derive(Default)]
     struct Stub {
         calls: std::sync::atomic::AtomicUsize,
+        /// The box prompt of the last call.
+        bbox: std::sync::Mutex<Option<[f32; 4]>>,
     }
     impl MaskModel for Stub {
         fn info(&self) -> &'static effectcraft_segment::ModelInfo {
@@ -445,6 +587,7 @@ mod tests {
         }
         fn segment(&self, _: &[[f32; 3]], w: usize, h: usize, prompt: &effectcraft_segment::Prompt) -> effectcraft_segment::Result<Vec<f32>> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *self.bbox.lock().unwrap() = prompt.bbox;
             let Some(([cx, cy], _)) = prompt.points.iter().find(|(_, fg)| *fg) else { return Err("no point".into()) };
             Ok((0..w * h).map(|i| (((i % w) as f32 + 0.5 - cx).hypot((i / w) as f32 + 0.5 - cy) < 15.0) as u8 as f32).collect())
         }
@@ -464,5 +607,85 @@ mod tests {
         let FrameMatte::Alpha(a) = frame_matte(&p, [100.0, 80.0], 25.0, 0, 1.0, &img, Some(stub.clone()), &mut frame, &|| false) else { panic!("no matte") };
         assert!(a[40 * 100 + 40] > 0.5 && a[5 * 100 + 5] < 0.5);
         assert_eq!(stub.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(*stub.bbox.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn the_box_reaches_the_model_as_a_box_prompt() {
+        let p = params(&[
+            ("objectPoint", Value::Vec2([90.0, 70.0])),
+            ("useBox", Value::Bool(true)),
+            ("boxTopLeft", Value::Vec2([100.0, 80.0])),
+            ("boxBottomRight", Value::Vec2([74.0, 54.0])),
+        ]);
+        // With a model: the point and a box stroke (corners ordered); without: the box's edges
+        // as a background stroke, as before.
+        let with = prompt_strokes(&p, [100.0, 80.0], 0, true).unwrap();
+        assert_eq!(with.iter().map(|s| s.kind).collect::<Vec<_>>(), [StrokeKind::Fg, StrokeKind::Box]);
+        assert_eq!(with[1].points, [[74.0, 54.0], [100.0, 80.0]]);
+        let without = prompt_strokes(&p, [100.0, 80.0], 0, false).unwrap();
+        assert_eq!(without.iter().map(|s| s.kind).collect::<Vec<_>>(), [StrokeKind::Fg, StrokeKind::Bg]);
+        // The model is called with the box itself (matte pixels at scale 1) and only one
+        // foreground point: no background points along the edges.
+        let stub = Arc::new(Stub::default());
+        let img = frame_at(0);
+        let mut frame = |g: i64| Some(Arc::new(frame_at(g)));
+        let FrameMatte::Alpha(a) = frame_matte(&p, [100.0, 80.0], 25.0, 0, 1.0, &img, Some(stub.clone()), &mut frame, &|| false) else { panic!("no matte") };
+        assert_eq!(*stub.bbox.lock().unwrap(), Some([74.0, 54.0, 100.0, 80.0]));
+        assert!(a[70 * 100 + 90] > 0.5 && a[40 * 100 + 40] < 0.5);
+        // At half resolution the box is scaled with the frame (another Input Key, so the
+        // full-resolution result above is not reused).
+        let mut p = p;
+        p.values.insert(INPUT_KEY.into(), Value::Str("half".into()));
+        let half = effectcraft_raster::resample(&img, 50, 40);
+        let mut frame = |g: i64| Some(Arc::new(effectcraft_raster::resample(&frame_at(g), 50, 40)));
+        let _ = frame_matte(&p, [100.0, 80.0], 25.0, 0, 0.5, &half, Some(stub.clone()), &mut frame, &|| false);
+        assert_eq!(*stub.bbox.lock().unwrap(), Some([37.0, 27.0, 50.0, 40.0]));
+    }
+
+    #[test]
+    fn job_frames_go_outward_from_the_reference_frame_inside_the_layer() {
+        let p = params(&[
+            ("objectTracking/referenceFrame", Value::Scalar(5.0)),
+            ("objectTracking/framesBefore", Value::Scalar(2.0)),
+            ("objectTracking/framesAfter", Value::Scalar(3.0)),
+        ]);
+        assert_eq!(job_frames(&p, [0, 100]), [5, 6, 7, 8, 4, 3]);
+        assert_eq!(job_frames(&p, [4, 6]), [5, 6, 4]);
+        assert!(job_frames(&p, [10, 20]).is_empty());
+        let huge = params(&[("objectTracking/referenceFrame", Value::Scalar(1e300)), ("objectTracking/framesAfter", Value::Scalar(f64::INFINITY))]);
+        assert!(job_frames(&huge, [0, 100]).is_empty());
+    }
+
+    /// Frozen mattes are used as stored while their key matches (no segmentation: a stored
+    /// pattern the segmentation could never produce comes out), and ignored once it doesn't.
+    #[test]
+    fn frozen_mattes_are_used_while_their_key_matches() {
+        let mut p = params(&[("objectPoint", Value::Vec2([40.0, 40.0])), ("objectTracking/framesAfter", Value::Scalar(3.0))]);
+        p.values.insert(INPUT_KEY.into(), Value::Str("frozen-test".into()));
+        // Left half opaque on frame 2.
+        let alpha: Vec<f32> = (0..100 * 80).map(|i| ((i % 100) < 50) as u8 as f32).collect();
+        let mut fc = FrozenCache { key: frozen_key(&p, [100.0, 80.0], 25.0, None), size: [100, 80], ..Default::default() };
+        fc.frames.insert(2, roto::freeze_frame(&alpha, &[]));
+        p.values.insert(FROZEN.into(), Value::Str(fc.to_json()));
+        assert!(is_frozen(&p));
+        let out = run(&p, 2);
+        assert!(out.data[40 * 100 + 10][3] > 0.99 && out.data[40 * 100 + 90][3] < 0.01, "the frozen matte is used");
+        // At half resolution too.
+        assert_eq!(frozen_alpha(&p, [100.0, 80.0], 25.0, 2, 50, 40, None).map(|a| (a[20 * 50 + 5], a[20 * 50 + 45])), Some((1.0, 0.0)));
+        // A frame without a frozen matte is computed (the disk).
+        assert!(wrong(&run(&p, 1), 42.0) < 30);
+        // Another prompt: the frozen mattes no longer apply.
+        p.values.insert("objectPoint".into(), Value::Vec2([41.0, 40.0]));
+        assert_eq!(frozen_alpha(&p, [100.0, 80.0], 25.0, 2, 100, 80, None), None);
+        assert!(wrong(&run(&p, 2), 44.0) < 30);
+        // Damaged frozen data is ignored, not a crash.
+        p.values.insert(FROZEN.into(), Value::Str("{\"key\": 3, \"frames\": [".into()));
+        assert_eq!(frozen_alpha(&p, [100.0, 80.0], 25.0, 2, 100, 80, None), None);
+        let mut fc2 = fc.clone();
+        fc2.size = [usize::MAX, 2];
+        p.values.insert("objectPoint".into(), Value::Vec2([40.0, 40.0]));
+        p.values.insert(FROZEN.into(), Value::Str(fc2.to_json()));
+        assert_eq!(frozen_alpha(&p, [100.0, 80.0], 25.0, 2, 100, 80, None), None);
     }
 }
