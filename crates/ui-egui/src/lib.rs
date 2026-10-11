@@ -55,6 +55,8 @@ const EDIT_QUIET: f64 = 0.3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialog {
     About,
+    /// Help ▸ Check for Updates…
+    CheckUpdates,
     NewComp,
     CompSettings,
     SolidSettings,
