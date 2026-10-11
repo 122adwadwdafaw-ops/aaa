@@ -2780,6 +2780,7 @@ const SPANISH: &[(&str, &str, &str)] = &[
     ("file.import", "File...", "Archivo..."),
     ("file.importMultiple", "Multiple Files...", "Varios archivos..."),
     ("file.importTimeline", "Adobe Premiere Pro Project...", "Proyecto de Adobe Premiere Pro..."),
+    ("file.importProject", "EffectCraft Project...", "Proyecto de EffectCraft..."),
     ("file.importPlaceholder", "Placeholder...", "Marcador de posición..."),
     ("file.importSolid", "Solid...", "Sólido..."),
     ("file.importLottie", "Lottie...", "Lottie..."),
@@ -3352,6 +3353,8 @@ const SPANISH: &[(&str, &str, &str)] = &[
     ("help.appPage", "EffectCraft Home Page", "Página de inicio de EffectCraft"),
     ("help.github", "EffectCraft on GitHub", "EffectCraft en GitHub"),
     ("file.openDemoProject", "Open Demo Project", "Abrir proyecto de demostración"),
+    ("app.fxConsole", "Effect Console...", "Consola de efectos..."),
+    ("layer.roundCorners", "Round Corners", "Redondear esquinas"),
 ];
 
 /// Brazilian Portuguese: the same (command, English label) keys as `JAPANESE`, one entry
@@ -3403,6 +3406,7 @@ const PORTUGUESE: &[(&str, &str, &str)] = &[
     ("file.import", "File...", "Arquivo..."),
     ("file.importMultiple", "Multiple Files...", "Vários arquivos..."),
     ("file.importTimeline", "Adobe Premiere Pro Project...", "Projeto do Adobe Premiere Pro..."),
+    ("file.importProject", "EffectCraft Project...", "Projeto do EffectCraft..."),
     ("file.importPlaceholder", "Placeholder...", "Espaço reservado..."),
     ("file.importSolid", "Solid...", "Sólido..."),
     ("file.importLottie", "Lottie...", "Lottie..."),
@@ -3975,6 +3979,8 @@ const PORTUGUESE: &[(&str, &str, &str)] = &[
     ("help.appPage", "EffectCraft Home Page", "Página inicial do EffectCraft"),
     ("help.github", "EffectCraft on GitHub", "EffectCraft no GitHub"),
     ("file.openDemoProject", "Open Demo Project", "Abrir projeto de demonstração"),
+    ("app.fxConsole", "Effect Console...", "Console de efeitos..."),
+    ("layer.roundCorners", "Round Corners", "Arredondar cantos"),
 ];
 
 #[cfg(test)]
