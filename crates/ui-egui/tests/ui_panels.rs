@@ -3,6 +3,7 @@
 //! panel lists and cancels a job; Lumetri Scopes switch scope through their dropdown.
 
 use effectcraft_engine::Session;
+use effectcraft_ui_egui::Dialog;
 use effectcraft_ui_egui::EffectcraftApp;
 use effectcraft_ui_egui::dock::PanelKind;
 use egui::{Event, Pos2, pos2};
@@ -64,6 +65,17 @@ fn window_menu_opens_the_new_panels() {
             assert!(h.state().auto.find(auto).is_some(), "{name}: {auto}");
         }
     }
+}
+
+/// The AI Chat panel's Settings button opens Settings ▸ AI Chat — one click from the panel.
+#[test]
+fn ai_chat_settings_button_opens_its_page() {
+    let mut h = harness();
+    open(&mut h, "aiChat");
+    click(&mut h, "aiChat.settings");
+    h.run_steps(2);
+    assert_eq!(h.state().dialog, Some(Dialog::Settings));
+    assert!(h.state().auto.find("settings.aiChat.bridgeUrl").is_some(), "the AI Chat page is showing");
 }
 
 #[test]

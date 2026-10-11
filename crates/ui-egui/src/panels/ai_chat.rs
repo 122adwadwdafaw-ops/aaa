@@ -373,12 +373,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     app.auto.add("aiChat.input", in_rect, "AI Chat input");
 
-    // Status and the Clear / Send buttons.
+    // Status and the Settings / Clear / Send buttons.
     let bar = Rect::from_min_size(pos2(rect.min.x, rect.max.y - status_h), vec2(rect.width(), status_h));
     let send_r = Rect::from_min_size(pos2(bar.max.x - 64.0, bar.center().y - 10.0), vec2(56.0, 20.0));
     let clear_r = Rect::from_min_size(pos2(send_r.min.x - 52.0, send_r.min.y), vec2(48.0, 20.0));
+    let settings_r = Rect::from_min_size(pos2(clear_r.min.x - 68.0, send_r.min.y), vec2(64.0, 20.0));
     let send_resp = ui.interact(send_r, egui::Id::new("ai-chat-send"), Sense::click());
     let clear_resp = ui.interact(clear_r, egui::Id::new("ai-chat-clear"), Sense::click());
+    let settings_resp = ui.interact(settings_r, egui::Id::new("ai-chat-settings"), Sense::click());
     let p = ui.painter().with_clip_rect(rect);
     let accent = if app.ai_chat.busy {
         t.field_border
@@ -391,12 +393,20 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     p.text(send_r.center(), Align2::CENTER_CENTER, tr("Send"), Tokens::ui(12.0), egui::Color32::WHITE);
     p.rect_stroke(clear_r, 3.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
     p.text(clear_r.center(), Align2::CENTER_CENTER, tr("Clear"), Tokens::ui(12.0), t.text);
+    p.rect_stroke(settings_r, 3.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    p.text(settings_r.center(), Align2::CENTER_CENTER, tr("Settings"), Tokens::ui(12.0), t.text);
     app.auto.add("aiChat.send", send_r, "Send");
     app.auto.add("aiChat.clear", clear_r, "Clear");
+    app.auto.add("aiChat.settings", settings_r, "AI Chat settings");
     let status = app.ui.ai_chat.status.clone();
     if !status.is_empty() {
-        let sp = ui.painter().with_clip_rect(Rect::from_min_max(pos2(rect.min.x, bar.min.y), pos2(clear_r.min.x - 4.0, bar.max.y)));
+        let sp = ui.painter().with_clip_rect(Rect::from_min_max(pos2(rect.min.x, bar.min.y), pos2(settings_r.min.x - 4.0, bar.max.y)));
         sp.text(pos2(rect.min.x + 6.0, bar.center().y), Align2::LEFT_CENTER, &status, Tokens::ui(11.0), t.text_faint);
+    }
+    if settings_resp.clicked() {
+        // One click from the panel to its Settings page (also Settings ▸ AI Chat… in the menu bar).
+        let ctx = ui.ctx().clone();
+        let _ = crate::menus::invoke(app, &ctx, "app.settings", serde_json::json!({"page": "aiChat"}));
     }
     if clear_resp.clicked() {
         app.ui.ai_chat.lines.clear();
