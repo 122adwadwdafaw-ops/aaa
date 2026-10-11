@@ -127,6 +127,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.dockPanel", "Dock Panel", [], None),
     uic!("window.floatPanel", "Undock Panel", [], None),
     uic!("window.closePanel", "Close Panel", [], None),
+    uic!("window.panelWindow", "Move Panel to New Window", [], None),
 ];
 
 pub fn panel_command_id(p: PanelKind) -> String {
@@ -291,6 +292,15 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             _ => {}
         }
     }
+    // Edit ▸ Paste with SVG markup on the system clipboard pastes it as a shape layer (After
+    // Effects 26.3). Copying in the app replaces the system clipboard with a note naming what
+    // was copied, so SVG there was copied after anything copied in the app.
+    if id == "edit.paste" && no_params(&params) && app.session.state.text_edit.is_none() {
+        let text = ctx.data_mut(|d| d.remove_temp::<String>(system_paste_id())).or_else(|| app.hooks.clipboard_text.as_ref().and_then(|f| f()));
+        if let Some(svg) = text.filter(|t| effectcraft_engine::vector::is_svg_text(t)) {
+            return run_engine(app, ctx, "edit.pasteSvg", json!({"svg": svg}));
+        }
+    }
     // Clear follows panel focus, including the Edit menu and keyboard shortcut.
     if id == "edit.clear" && params.as_object().is_some_and(|p| p.is_empty()) && app.ui.focused == PanelKind::Project {
         // Through `invoke`, so deleting items that compositions use still asks first (M3.16).
@@ -441,6 +451,22 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             return Err(error.unwrap_or_else(|| "invalid docking layout".into()));
         }
         return Ok(Value::Null);
+    }
+    // Multiple monitors: {panel, window?: bool} moves a panel into its own native window (or
+    // back into the main window; no `window` toggles).
+    if id == "window.panelWindow" {
+        // A panel name ("Info", "Effect Controls") or its serialized form ({"Viewer": 2}).
+        let value = params.get("panel").ok_or("panelWindow: need `panel`")?;
+        let panel = match value.as_str() {
+            Some(name) => PanelKind::from_name(name).ok_or(format!("unknown panel `{name}`"))?,
+            None => serde_json::from_value::<PanelKind>(value.clone()).map_err(|_| "panelWindow: unknown `panel`".to_string())?,
+        };
+        let window = match params.get("window") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_bool().ok_or("panelWindow: `window` must be true or false")?),
+        };
+        let window = app.set_panel_window(ctx, panel, window)?;
+        return Ok(json!({"window": window}));
     }
     // A UI-only command (not in the engine's menus), so `frontend` gets it from here.
     if id == "window.maximizeApp" {
@@ -1213,7 +1239,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "keys.rpfCameraImport" => ("path", Ask::Open(&["json", "csv", "txt"])),
         "essential.exportTemplate" => ("path", Ask::Save("Template.ectemplate")),
         "essential.importTemplate" => ("path", Ask::Open(&["ectemplate"])),
-        "file.setProxy" => ("path", Ask::Open(&["mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr"])),
+        "file.setProxy" => ("path", Ask::Open(&["mp4", "mov", "m4v", "mkv", "webm", "mxf", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr"])),
         _ => return None,
     };
     if params.get(key).is_some()
@@ -1225,8 +1251,8 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         return None;
     }
     const MEDIA: &[&str] = &[
-        "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "wav", "aif", "aiff", "mp3", "flac", "ogg",
-        "opus", "svg", "pdf", "ai", "eps", "psd", "psb", "gltf", "glb", "obj", "json", "csv", "tsv",
+        "mp4", "mov", "m4v", "mkv", "webm", "mxf", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "dpx", "cin", "wav", "aif", "aiff", "mp3",
+        "flac", "ogg", "opus", "svg", "pdf", "ai", "eps", "psd", "psb", "tga", "hdr", "gltf", "glb", "obj", "stl", "fbx", "json", "csv", "tsv",
     ];
     // A host whose modal dialogs would run a nested event loop inside this frame (macOS: a
     // drag over the window then re-entered winit's event handler and aborted, #511) shows the
@@ -1561,6 +1587,11 @@ fn mods_match(want: egui::Modifiers, got: egui::Modifiers) -> bool {
 
 /// Set (egui temp data) from a plain Spacebar press until its release while a tap would still
 /// run the Spacebar shortcut.
+/// The system clipboard's text of this frame's paste event, for the Edit ▸ Paste it runs.
+fn system_paste_id() -> egui::Id {
+    egui::Id::new("menus-system-paste")
+}
+
 fn space_tap_id() -> egui::Id {
     egui::Id::new("spacebar-tap")
 }
@@ -1641,6 +1672,9 @@ fn handle_shortcuts_impl(app: &mut EffectcraftApp, ctx: &egui::Context, tab_only
     // Text editing in the viewer takes the clipboard events itself.
     let clipboard = app.session.state.text_edit.is_none();
     let project = app.ui.focused == PanelKind::Project;
+    // The paste event's text: Edit ▸ Paste pastes SVG markup as a shape layer.
+    let pasted =
+        if clipboard { ctx.input(|i| i.events.iter().rev().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None })) } else { None };
     let mut events: Vec<(egui::Key, egui::Modifiers, bool)> = ctx.input(|i| {
         // The windowing layer turns Ctrl+C / Ctrl+X / Ctrl+V into clipboard events instead of
         // key presses: map them back to the keys (with the modifiers held) so Edit ▸ Copy, Cut,
@@ -1756,9 +1790,15 @@ fn handle_shortcuts_impl(app: &mut EffectcraftApp, ctx: &egui::Context, tab_only
         }
         if let Some((_, _, id, params)) = binds.iter().find(|(m, k, ..)| *k == key && mods_match(*m, mods)) {
             let (id, params) = (id.clone(), if params.is_null() { json!({}) } else { params.clone() });
+            if id == "edit.paste"
+                && let Some(t) = &pasted
+            {
+                ctx.data_mut(|d| d.insert_temp(system_paste_id(), t.clone()));
+            }
             if let Err(e) = invoke(app, ctx, &id, params) {
                 app.ui.status = e;
             }
+            ctx.data_mut(|d| d.remove_temp::<String>(system_paste_id()));
         }
     }
 }

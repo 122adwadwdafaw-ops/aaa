@@ -164,6 +164,10 @@ enum Gesture {
     PinMarquee {
         start: Pos2,
     },
+    /// Object Matte tool: a box around the object (screen point where the drag began).
+    ObjectMatteBox {
+        start: Pos2,
+    },
     /// Puppet tool Record mode (⌘/Ctrl-drag a pin): the drag is sampled in real time (seconds
     /// since it began, effect space) and becomes keyframes on release (`puppet.recordPin`); the
     /// current time runs along while recording.
@@ -1113,6 +1117,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let context_layers: Vec<u64> =
         app.session.state.selected_layers.iter().filter(|id| comp.layer(**id).is_some_and(|l| !l.switches.locked)).map(|id| id.0).collect();
     let mut context_actions = Vec::new();
+    let copy_frame = crate::i18n::label(app, "comp.copyFrame", "Copy Frame to Clipboard");
     resp.context_menu(|ui| {
         let hits = ui.data(|d| d.get_temp::<Vec<(u64, String)>>(menu_hits_id)).unwrap_or_default();
         if !hits.is_empty() {
@@ -1132,6 +1137,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.label(crate::i18n::tr("No unlocked layer selected"));
         } else {
             super::timeline::layer_menu(ui, &context_layers, &mut context_actions);
+        }
+        ui.separator();
+        if ui.button(copy_frame).clicked() {
+            context_actions.push(("comp.copyFrame".to_owned(), serde_json::json!({"comp": cid.0})));
+            ui.close();
         }
     });
     for (id, params) in context_actions {
@@ -1164,6 +1174,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             t if t.is_shape() => egui::CursorIcon::Crosshair,
             _ if app.ui.viewer.roi_draw => egui::CursorIcon::Crosshair,
+            Tool::ObjectMatte => {
+                // The tool draws its own crosshair (and the layer it would matte) while no box
+                // is being dragged.
+                if ui.data(|d| d.get_temp::<Gesture>(egui::Id::new("viewer-gesture"))).is_none() {
+                    super::object_matte_tool::hover(app, &painter, &map, &ectx, hp);
+                }
+                egui::CursorIcon::None
+            }
             t if t.puppet_kind().is_some() => match super::puppet_tool::hit(&pin_hits, hp) {
                 Some((_, super::puppet_tool::PinPart::Ring)) => egui::CursorIcon::Alias,
                 Some((_, super::puppet_tool::PinPart::Scale)) => egui::CursorIcon::ResizeNwSe,
@@ -1293,6 +1311,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             // From where the button went down: by the time the pointer has moved far enough to
             // count as a drag it has already left the press point, and the shape is drawn there.
             t if t.is_shape() => Some(Gesture::Create { tool: t, start: map.to_comp(press) }),
+            Tool::ObjectMatte => Some(Gesture::ObjectMatteBox { start: press }),
             t if t.puppet_kind().is_some() && super::puppet_tool::hit(&pin_hits, press).is_none() => {
                 // Off the pins: Alt or a press outside the art drags a marquee that selects pins.
                 (mods.alt || puppet_layer(app, cpt).is_none()).then_some(Gesture::PinMarquee { start: press })
@@ -1609,6 +1628,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 q["merge"] = json!(merge);
                 let _ = app.session.execute("track.setPoint", q);
             }
+            Gesture::ObjectMatteBox { start } => super::object_matte_tool::draw_box(app, &painter, start, pos),
             Gesture::Marquee { start } | Gesture::PinMarquee { start } => {
                 let r = Rect::from_two_pos(start, pos);
                 painter.rect_filled(r, 0.0, t.accent.gamma_multiply(0.12));
@@ -1649,6 +1669,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 Gesture::PuppetPin { layer, pin, .. } => super::puppet_tool::reveal_pin(app, layer, pin),
+                Gesture::ObjectMatteBox { start } => super::object_matte_tool::apply(app, &ectx, &map, start, Some(pos), mods.shift),
                 Gesture::Create { tool, start } => {
                     let end = map.to_comp(pos);
                     create_shape(app, tool, start, end, mods);
@@ -1752,6 +1773,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 // Clicking away from the free-transform box ends it.
                 ov::end_free_transform(&ctx);
             }
+            Tool::ObjectMatte => super::object_matte_tool::apply(app, &ectx, &map, pos, None, mods.shift),
             t if t.puppet_kind().is_some() => {
                 if let Some((h, _)) = super::puppet_tool::hit(&pin_hits, pos) {
                     // Click selects the pin; Shift-click adds or removes it.
@@ -2075,7 +2097,7 @@ pub(crate) fn selectable_layers(comp: &Comp, time: Tick) -> impl Iterator<Item =
 }
 
 /// Selectable layers under a comp point, front to back.
-fn layers_at<'a, 'b>(ectx: &'b EvalCtx<'a>, cpt: [f64; 2]) -> impl Iterator<Item = &'a Layer> + 'b {
+pub(crate) fn layers_at<'a, 'b>(ectx: &'b EvalCtx<'a>, cpt: [f64; 2]) -> impl Iterator<Item = &'a Layer> + 'b {
     selectable_layers(ectx.comp, ectx.time).filter(move |l| layer_quad(ectx, l).is_some_and(|(_, q, _)| point_in_quad(cpt, &q)))
 }
 
@@ -2389,9 +2411,9 @@ fn show_frame(app: &mut EffectcraftApp, ctx: &egui::Context, key: crate::frames:
         FrameImage::Cpu(img) => {
             // Frames wider or taller than the GPU's texture limit go up averaged down too (#201).
             let max = crate::frames::max_texture_side(ctx);
-            let fitted = crate::frames::fit_texture_by((*img).clone(), max, minify);
+            let fitted = crate::frames::fit_shared_texture_by(&img, max, minify);
             match &mut app.viewer_tex {
-                Some((tex, k, m)) if tex.size() == fitted.size => {
+                Some((tex, k, m)) if tex.size() == fitted.size() => {
                     tex.set(fitted, opts);
                     (*k, *m) = (key, minify);
                 }

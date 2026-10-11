@@ -322,6 +322,7 @@ const JAPANESE: &[(&str, &str)] = &[
     ("No layer selected", "レイヤーが選択されていません"),
     ("No matching effects or presets", "一致するエフェクトまたはプリセットはありません"),
     ("No matching fonts", "一致するフォントはありません"),
+    ("Variable fonts only", "可変フォントのみ"),
     ("No model credits were built into this copy.", "このビルドにはモデルのクレジットが含まれていません。"),
     ("No nested compositions", "ネストされたコンポジションはありません"),
     ("No shortcut", "ショートカットなし"),
@@ -483,6 +484,8 @@ const JAPANESE: &[(&str, &str)] = &[
     ("Type a command or effect…", "コマンドまたはエフェクトを入力…"),
     ("URL:", "URL:"),
     ("Undock Panel", "パネルのドッキングを解除"),
+    ("Move Panel to New Window", "新規ウィンドウにパネルを移動"),
+    ("Move Panel to Main Window", "メインウィンドウにパネルを移動"),
     ("Unlink {}", "{}のリンクを解除"),
     (
         "Use this option to place the currently selected layers together into a new intermediate composition.",
@@ -508,6 +511,7 @@ const JAPANESE: &[(&str, &str)] = &[
     ("⌘/Ctrl-drag a pin to record its motion", "⌘/Ctrl+ドラッグでピンの動きを記録"),
     ("▣ {}", "▣ {}"),
     ("⚠ {} is used by:", "⚠ {}は次のコマンドで使用中:"),
+    ("Track", "トラック"),
 ];
 
 const SIMPLIFIED_CHINESE: &[(&str, &str)] = &[
@@ -756,6 +760,7 @@ const SIMPLIFIED_CHINESE: &[(&str, &str)] = &[
     ("No layer selected", "未选择图层"),
     ("No matching effects or presets", "没有匹配的效果或预设"),
     ("No matching fonts", "没有匹配的字体"),
+    ("Variable fonts only", "仅可变字体"),
     ("No model credits were built into this copy.", "此副本未内置模型致谢。"),
     ("No nested compositions", "没有嵌套合成"),
     ("No shortcut", "无快捷键"),
@@ -918,6 +923,8 @@ const SIMPLIFIED_CHINESE: &[(&str, &str)] = &[
     ("Type a command or effect…", "输入命令或效果…"),
     ("URL:", "URL："),
     ("Undock Panel", "取消停靠面板"),
+    ("Move Panel to New Window", "将面板移至新窗口"),
+    ("Move Panel to Main Window", "将面板移回主窗口"),
     ("Unfreeze", "解冻"),
     ("Unlink {}", "取消链接 {}"),
     (
@@ -1033,6 +1040,7 @@ const SIMPLIFIED_CHINESE: &[(&str, &str)] = &[
     ("After Effects project", "After Effects 项目"),
     ("Lottie animation", "Lottie 动画"),
     ("Project", "项目"),
+    ("Track", "跟踪"),
 ];
 
 const TRADITIONAL_CHINESE: &[(&str, &str)] = &[
@@ -1281,6 +1289,7 @@ const TRADITIONAL_CHINESE: &[(&str, &str)] = &[
     ("No layer selected", "未選取圖層"),
     ("No matching effects or presets", "沒有匹配的效果或預設集"),
     ("No matching fonts", "沒有符合的字體"),
+    ("Variable fonts only", "僅可變字型"),
     ("No model credits were built into this copy.", "此副本未內置模型致謝。"),
     ("No nested compositions", "沒有嵌套合成"),
     ("No shortcut", "無快速鍵"),
@@ -1443,6 +1452,8 @@ const TRADITIONAL_CHINESE: &[(&str, &str)] = &[
     ("Type a command or effect…", "輸入命令或效果…"),
     ("URL:", "URL："),
     ("Undock Panel", "取消停靠面板"),
+    ("Move Panel to New Window", "將面板移至新視窗"),
+    ("Move Panel to Main Window", "將面板移回主視窗"),
     ("Unfreeze", "解凍"),
     ("Unlink {}", "取消鏈接 {}"),
     (
@@ -1553,6 +1564,7 @@ const TRADITIONAL_CHINESE: &[(&str, &str)] = &[
     ("After Effects project", "After Effects 專案"),
     ("Lottie animation", "Lottie 動畫"),
     ("Project", "專案"),
+    ("Track", "追蹤"),
 ];
 
 /// Ukrainian (uk): original translations of the same interface rows as the Chinese catalogs.
@@ -1802,6 +1814,7 @@ const UKRAINIAN: &[(&str, &str)] = &[
     ("No layer selected", "Шар не виділено"),
     ("No matching effects or presets", "Не знайдено відповідних ефектів або наборів"),
     ("No matching fonts", "Не знайдено відповідних шрифтів"),
+    ("Variable fonts only", "Лише змінні шрифти"),
     ("No model credits were built into this copy.", "Ця копія не містить відомостей про моделі."),
     ("No nested compositions", "Немає вкладених композицій"),
     ("No shortcut", "Немає клавіатурного скорочення"),
@@ -1963,6 +1976,8 @@ const UKRAINIAN: &[(&str, &str)] = &[
     ("Type a command or effect…", "Введіть команду або ефект…"),
     ("URL:", "URL:"),
     ("Undock Panel", "Від’єднати панель"),
+    ("Move Panel to New Window", "Перемістити панель у нове вікно"),
+    ("Move Panel to Main Window", "Перемістити панель у головне вікно"),
     ("Unlink {}", "Від’єднати {}"),
     (
         "Use this option to place the currently selected layers together into a new intermediate composition.",
@@ -1988,6 +2003,7 @@ const UKRAINIAN: &[(&str, &str)] = &[
     ("⌘/Ctrl-drag a pin to record its motion", "Перетягніть опорну точку з ⌘/Ctrl, щоб записати її рух"),
     ("▣ {}", "▣ {}"),
     ("⚠ {} is used by:", "⚠ {} використовується в:"),
+    ("Track", "Відстежити"),
 ];
 
 #[cfg(test)]

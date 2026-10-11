@@ -379,6 +379,97 @@ fn vp9_webm_frames() {
     }
 }
 
+/// MXF OP1a as broadcast cameras write it: long-GOP MPEG-2 4:2:2 (XDCAM-like, B-frames) with
+/// 24-bit PCM audio.
+fn mpeg2_mxf() -> Option<PathBuf> {
+    ffmpeg_fixture(
+        "testsrc2_mpeg2_pcm.mxf",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1280x720:rate=25:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=2",
+            "-c:v",
+            "mpeg2video",
+            "-pix_fmt",
+            "yuv422p",
+            "-q:v",
+            "2",
+            "-g",
+            "12",
+            "-bf",
+            "2",
+            "-c:a",
+            "pcm_s24le",
+            "-ac",
+            "2",
+        ],
+    )
+}
+
+/// MXF OP1a with intra-only DNxHD 36 (Avid's offline codec).
+fn dnxhd_mxf() -> Option<PathBuf> {
+    ffmpeg_fixture(
+        "testsrc2_dnxhd.mxf",
+        &["-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=25:duration=1", "-c:v", "dnxhd", "-b:v", "36M", "-pix_fmt", "yuv422p"],
+    )
+}
+
+/// MXF is importable footage (After Effects imports it), whatever the extension's case.
+#[test]
+fn mxf_is_importable() {
+    assert!(effectcraft_media::is_importable(Path::new("/media/A001C003.mxf")));
+    assert!(effectcraft_media::is_importable(Path::new("/media/A001C003.MXF")));
+    assert!(!effectcraft_media::is_importable(Path::new("/media/A001C003.avi")), "no AVI demuxer yet");
+}
+
+#[test]
+fn mxf_mpeg2_with_pcm_audio() {
+    let Some(p) = mpeg2_mxf() else { return };
+    let f = probe(&p).expect("probe");
+    assert_eq!(f.kind, FootageKind::Video);
+    assert_eq!((f.width, f.height), (1280, 720));
+    assert_eq!(f.frame_rate, FrameRate::FPS_25);
+    assert!((f.duration.seconds() - 2.0).abs() < 0.1, "duration {:?}", f.duration.seconds());
+    assert!(f.has_video && f.has_audio);
+    eprintln!("mxf mpeg-2: codec {:?}", f.codec);
+    let pool = MediaPool::new();
+    // sequential, a backwards seek, a jump into a GOP (B-frames reordered), the last frame
+    for n in [0usize, 1, 2, 3, 30, 7, 49] {
+        let img = pool.frame_at(&f, t_of(f.frame_rate, n as i64)).expect("frame");
+        let db = psnr(&img, &reference_frame(&p, n));
+        eprintln!("mxf mpeg-2 frame {n}: {db:.2} dB");
+        assert!(db > 35.0, "frame {n}: {db:.2} dB");
+    }
+    let s = pool.audio_samples(&f, Tick(TICKS_PER_SECOND / 2), 4800, 48_000);
+    assert_eq!(s.len(), 9600);
+    let rms = (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
+    // ffmpeg's sine source upmixed to stereo: −24 dBFS RMS
+    assert!((rms - 0.0625).abs() < 0.01, "rms {rms}");
+}
+
+#[test]
+fn mxf_dnxhd_frames() {
+    let Some(p) = dnxhd_mxf() else { return };
+    let f = probe(&p).expect("probe");
+    assert_eq!(f.kind, FootageKind::Video);
+    assert_eq!((f.width, f.height), (1920, 1080));
+    assert_eq!(f.frame_rate, FrameRate::FPS_25);
+    assert!(!f.has_audio);
+    eprintln!("mxf dnxhd: codec {:?}", f.codec);
+    let pool = MediaPool::new();
+    for n in [0usize, 12, 24, 3] {
+        let img = pool.frame_at(&f, t_of(f.frame_rate, n as i64)).expect("frame");
+        let db = psnr(&img, &reference_frame(&p, n));
+        eprintln!("mxf dnxhd frame {n}: {db:.2} dB");
+        assert!(db > 35.0, "frame {n}: {db:.2} dB");
+    }
+}
+
 #[test]
 fn png_sequence_import() {
     let Some(first) = png_sequence() else { return };
@@ -452,6 +543,16 @@ fn png_with_alpha() {
     assert!(a.data[0][3] == 0.0 && a.data[a.data.len() - 1][3] > 0.98);
     let th = pool.thumbnail(&f, 64).expect("thumb");
     assert_eq!((th.width, th.height), (64, 32));
+}
+
+/// File ▸ Import of an FBX scene: importable by extension and probed as a 3D model item.
+#[test]
+fn fbx_imports_as_a_model() {
+    assert!(effectcraft_media::is_importable(Path::new("scene.fbx")));
+    let fbx = "FBXHeaderExtension: {\n FBXVersion: 7400\n}\nObjects: {\n Geometry: 1, \"Geometry::Tri\", \"Mesh\" {\n  Vertices: *9 {\n   a: 0,0,0,1,0,0,0,1,0\n  }\n  PolygonVertexIndex: *3 {\n   a: 0,1,-3\n  }\n }\n Model: 2, \"Model::Tri\", \"Mesh\" {\n }\n}\nConnections: {\n C: \"OO\",2,0\n C: \"OO\",1,2\n}\n";
+    let f = effectcraft_media::probe_bytes("scene.fbx", Arc::from(fbx.as_bytes())).expect("probe");
+    assert_eq!(f.kind, FootageKind::Model);
+    assert_eq!(f.codec, "FBX (1 meshes, 1 triangles)");
 }
 
 #[test]
@@ -569,6 +670,68 @@ fn exr_still_is_linear_float() {
     assert!(b[3] == 0.5 && b[0] > 0.85 && b[0] < 1.0, "{b:?}");
 }
 
+/// #745: a Targa file has no signature, so its format comes from the extension; it imports as
+/// a still with straight alpha, identical to ffmpeg's own decode of the source.
+#[test]
+fn targa_still_matches_ffmpeg() {
+    let Some(png) = alpha_png() else { return };
+    // ffmpeg's Targa encoder (run-length compressed)
+    let Some(tga) = ffmpeg_fixture("alpha.tga", &["-i", png.to_str().expect("utf8")]) else { return };
+    assert!(effectcraft_media::is_importable(&tga));
+    let f = probe(&tga).expect("probe");
+    assert_eq!(f.kind, FootageKind::Still);
+    assert_eq!((f.width, f.height), (256, 128));
+    assert_eq!(f.codec, "TGA");
+    assert_eq!(f.alpha, AlphaMode::Straight);
+    let img = MediaPool::new().frame_at(&f, Tick::ZERO).expect("frame");
+    assert_eq!(*img, load_png(&png));
+    // hostile input: a truncated file is refused or decodes partially, never panics
+    let bytes = std::fs::read(&tga).expect("read");
+    for n in [0, 5, 18, 40, bytes.len() / 2] {
+        let cut: Arc<[u8]> = bytes.get(..n).expect("cut").into();
+        if let Ok(f) = effectcraft_media::probe_bytes("cut.tga", cut.clone()) {
+            let pool = MediaPool::new();
+            pool.add_bytes("cut.tga", cut);
+            let _ = pool.frame_at(&f, Tick::ZERO);
+        }
+    }
+}
+
+/// #745: a Radiance HDR file holds linear float light, sRGB-encoded like OpenEXR (values above 1
+/// kept); ffmpeg's encoder is the oracle for the file layout.
+#[test]
+fn radiance_hdr_still_is_linear_float() {
+    // written with the image crate's encoder: linear 0.214 ≈ sRGB 0.5, and super-white 4.0
+    let dir = fixtures();
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let p = dir.join(format!("float-{}.hdr", std::process::id()));
+    let px = vec![0.214f32, 0.214, 0.214, 4.0, 4.0, 4.0];
+    image::DynamicImage::ImageRgb32F(image::ImageBuffer::from_raw(2, 1, px).expect("buf")).save(&p).expect("write hdr");
+    assert!(effectcraft_media::is_importable(&p));
+    let f = probe(&p).expect("probe");
+    assert_eq!(f.kind, FootageKind::Still);
+    assert_eq!((f.width, f.height), (2, 1));
+    assert_eq!(f.codec, "HDR");
+    assert_eq!(f.alpha, AlphaMode::Ignore);
+    let img = MediaPool::new().frame_at(&f, Tick::ZERO).expect("frame");
+    std::fs::remove_file(&p).ok();
+    let a = img.data[0];
+    assert!((a[0] - 0.5).abs() < 5e-3 && a[3] == 1.0, "{a:?}");
+    assert!(img.data[1][0] > 1.5, "super-white kept: {:?}", img.data[1]);
+
+    // ffmpeg's Radiance encoder (run-length compressed scanlines): a mid grey of 0.5 linear
+    let Some(ff) = ffmpeg_fixture("grey.hdr", &["-f", "lavfi", "-i", "color=c=0x808080:size=64x16", "-frames:v", "1", "-pix_fmt", "gbrpf32le"]) else {
+        return;
+    };
+    let f = probe(&ff).expect("probe ffmpeg hdr");
+    assert_eq!((f.width, f.height), (64, 16));
+    let img = MediaPool::new().frame_at(&f, Tick::ZERO).expect("frame");
+    let want = 1.055 * (128.0f32 / 255.0).powf(1.0 / 2.4) - 0.055;
+    for q in &img.data {
+        assert!((q[0] - want).abs() < 0.01 && (q[1] - want).abs() < 0.01 && (q[2] - want).abs() < 0.01 && q[3] == 1.0, "{q:?} vs {want}");
+    }
+}
+
 /// A FLAC of `secs` seconds at `rate` Hz with `channels` channels of a 440 Hz sine (first two:
 /// −24 dBFS RMS, the rest quieter), samples of `fmt` (`s16`, or `s32` with 24 significant bits).
 fn sine_flac(secs: u32, rate: u32, channels: u32, fmt: &str) -> Option<PathBuf> {
@@ -673,4 +836,156 @@ fn conformed_flac_audio_reads_back_like_the_decoder() {
     assert_eq!(conformed, decoded);
     assert_eq!(pool.audio_samples(&f, at, 4800, 48_000), decoded);
     let _ = std::fs::remove_dir_all(&folder);
+}
+
+/// File ▸ Import of an STL part: importable by extension and probed as a 3D model item.
+#[test]
+fn stl_imports_as_a_model() {
+    assert!(effectcraft_media::is_importable(Path::new("part.stl")));
+    let ascii = "solid part\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid part\n";
+    let f = effectcraft_media::probe_bytes("part.stl", Arc::from(ascii.as_bytes())).expect("probe");
+    assert_eq!(f.kind, FootageKind::Model);
+    assert_eq!(f.codec, "STL (1 meshes, 1 triangles)");
+}
+
+/// `src` decoded by ffmpeg to 8-bit (`deep`: 16-bit) RGBA, premultiplied like the pool's frames.
+fn ffmpeg_rgba(src: &Path, deep: bool) -> Vec<[f32; 4]> {
+    let out = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(src)
+        .args(["-sws_flags", "accurate_rnd+full_chroma_int+bitexact", "-f", "rawvideo", "-pix_fmt", if deep { "rgba64le" } else { "rgba" }, "-"])
+        .output()
+        .expect("run ffmpeg");
+    assert!(out.status.success(), "ffmpeg decode of {}", src.display());
+    let px = |v: [f32; 4]| [v[0] * v[3], v[1] * v[3], v[2] * v[3], v[3]];
+    if !deep {
+        return out.stdout.as_chunks::<4>().0.iter().map(|p| px(p.map(|v| v as f32 / 255.0))).collect();
+    }
+    out.stdout.as_chunks::<8>().0.iter().map(|p| px(std::array::from_fn(|i| u16::from_le_bytes([p[2 * i], p[2 * i + 1]]) as f32 / 65535.0))).collect()
+}
+
+/// #756: DPX stills in every layout and depth ffmpeg's encoder writes (8-bit luma / RGB / RGBA /
+/// ABGR, 10- and 12-bit filled RGB, 16-bit luma / RGB / RGBA, big- and little-endian, lines
+/// padded to 32-bit words) import and decode as ffmpeg decodes them.
+#[test]
+fn dpx_stills_match_ffmpeg() {
+    let Some(png) = alpha_png() else { return };
+    let src = png.to_str().expect("utf8");
+    let formats = [
+        ("rgb24", "DPX 8-bit RGB", false),
+        ("rgba", "DPX 8-bit RGBA", true),
+        ("abgr", "DPX 8-bit ABGR", true),
+        ("gray", "DPX 8-bit luma", false),
+        ("gray16be", "DPX 16-bit luma", false),
+        ("gbrp10be", "DPX 10-bit RGB", false),
+        ("gbrp10le", "DPX 10-bit RGB", false),
+        ("gbrp12be", "DPX 12-bit RGB", false),
+        ("gbrp12le", "DPX 12-bit RGB", false),
+        ("rgb48be", "DPX 16-bit RGB", false),
+        ("rgba64le", "DPX 16-bit RGBA", true),
+    ];
+    for (pf, codec, alpha) in formats {
+        // 250 px wide: 8-bit and 10-bit lines need padding to a 32-bit word.
+        let Some(p) = ffmpeg_fixture(&format!("dpx-{pf}.dpx"), &["-i", src, "-vf", "scale=250:100", "-pix_fmt", pf]) else { return };
+        assert!(effectcraft_media::is_importable(&p));
+        let f = probe(&p).expect(pf);
+        assert_eq!(f.kind, FootageKind::Still);
+        assert_eq!((f.width, f.height, f.codec.as_str()), (250, 100, codec), "{pf}");
+        assert_eq!(f.alpha, if alpha { AlphaMode::Straight } else { AlphaMode::Ignore }, "{pf}");
+        let img = MediaPool::new().frame_at(&f, Tick::ZERO).expect(pf);
+        let want = ffmpeg_rgba(&p, !codec.contains("8-bit"));
+        assert_eq!(want.len(), img.data.len(), "{pf}");
+        let worst = img.data.iter().zip(&want).flat_map(|(a, b)| (0..4).map(move |k| (a[k] - b[k]).abs())).fold(0.0f32, f32::max);
+        // (within one 16-bit step: ffmpeg widens 10/12-bit samples by bit replication)
+        assert!(worst < 2.0 / 65535.0, "{pf}: worst difference {worst}");
+    }
+}
+
+/// #756: a numbered run of DPX files plays as an image sequence.
+#[test]
+fn dpx_sequence_plays() {
+    let Some(first) = ffmpeg_fixture("dpxseq/plate.0001.dpx", &["-f", "lavfi", "-i", "color=c=0x202020:size=32x16", "-frames:v", "1", "-pix_fmt", "gbrp10le"])
+    else {
+        return;
+    };
+    let Some(second) = ffmpeg_fixture("dpxseq/plate.0002.dpx", &["-f", "lavfi", "-i", "color=c=0xe0e0e0:size=32x16", "-frames:v", "1", "-pix_fmt", "gbrp10le"])
+    else {
+        return;
+    };
+    let mut f = probe(&first).expect("probe");
+    f.kind = FootageKind::Sequence;
+    f.sequence = [&first, &second].iter().map(|p| p.to_string_lossy().to_string()).collect();
+    f.sync_sequence_duration();
+    let pool = MediaPool::new();
+    let level = |n| pool.frame_at(&f, t_of(f.frame_rate, n)).expect("frame").data[0][0];
+    assert!((level(0) - 32.0 / 255.0).abs() < 0.01 && (level(1) - 224.0 / 255.0).abs() < 0.01, "{} {}", level(0), level(1));
+}
+
+/// #756: a Kodak Cineon file (no ffmpeg encoder: written here from the spec, 10-bit RGB
+/// left-justified in big-endian 32-bit words; checked against ImageMagick's reader when written)
+/// shows its log code values as stored; a truncated one is refused, never a panic.
+#[test]
+fn cineon_still_shows_code_values() {
+    let (w, h) = (5u32, 3u32);
+    let code = |x: u32, y: u32| [(x * 37 + y * 101) % 1024, (x * 11 + y * 7 + 300) % 1024, (x * 3 + y * 251 + 700) % 1024];
+    let mut b = vec![0u8; 1024];
+    b[..4].copy_from_slice(&[0x80, 0x2a, 0x5f, 0xd7]);
+    b[4..8].copy_from_slice(&1024u32.to_be_bytes());
+    b[8..12].copy_from_slice(&1024u32.to_be_bytes());
+    b[24..28].copy_from_slice(b"V4.5");
+    b[193] = 3;
+    for c in 0..3 {
+        let o = 196 + 28 * c;
+        b[o + 1] = c as u8 + 1;
+        b[o + 2] = 10;
+        b[o + 4..o + 8].copy_from_slice(&w.to_be_bytes());
+        b[o + 8..o + 12].copy_from_slice(&h.to_be_bytes());
+    }
+    b[681] = 5;
+    for y in 0..h {
+        for x in 0..w {
+            let [r, g, bl] = code(x, y);
+            b.extend_from_slice(&((r << 22) | (g << 12) | (bl << 2)).to_be_bytes());
+        }
+    }
+    let bytes: Arc<[u8]> = b.clone().into();
+    let f = effectcraft_media::probe_bytes("scan.cin", bytes.clone()).expect("probe");
+    assert_eq!((f.kind, f.width, f.height, f.codec.as_str(), f.alpha), (FootageKind::Still, 5, 3, "Cineon 10-bit RGB, log", AlphaMode::Ignore));
+    assert!(effectcraft_media::is_importable(Path::new("scan.cin")));
+    let pool = MediaPool::new();
+    pool.add_bytes("scan.cin", bytes);
+    let img = pool.frame_at(&f, Tick::ZERO).expect("frame");
+    for y in 0..h {
+        for x in 0..w {
+            let want = code(x, y).map(|v| v as f32 / 1023.0);
+            let got = img.get(i64::from(x), i64::from(y));
+            assert!((0..3).all(|k| (got[k] - want[k]).abs() < 1e-4) && got[3] == 1.0, "{x},{y}: {got:?} vs {want:?}");
+        }
+    }
+    for n in [3, 100, 700, 1024, b.len() - 1] {
+        let cut: Arc<[u8]> = b.get(..n).expect("cut").into();
+        assert!(effectcraft_media::probe_bytes("cut.cin", cut).is_err(), "{n}");
+    }
+}
+
+/// #329: a frame read that is called off (a scrub has moved on) gives up before the decoder
+/// seeks and decodes forward from the keyframe, so it no longer holds the decoder the newest
+/// frame waits for; the frame decodes as usual when it is wanted again.
+#[test]
+fn a_called_off_read_does_not_decode() {
+    use std::sync::atomic::AtomicBool;
+    let Some(p) = h264_mp4() else { return };
+    let f = probe(&p).expect("probe");
+    let pool = MediaPool::new();
+    let t = t_of(f.frame_rate, 45);
+    let off = Arc::new(AtomicBool::new(true));
+    let mut got = None;
+    pool.cancellable(&off, &mut || got = Some(pool.frame(ItemId(1), &f, t)));
+    assert!(got.expect("ran").is_none(), "a called-off read decoded its frame");
+    assert_eq!(pool.stats().frames, 0, "nothing cached for it");
+    let on = Arc::new(AtomicBool::new(false));
+    let mut got = None;
+    pool.cancellable(&on, &mut || got = pool.frame(ItemId(1), &f, t));
+    let img = got.expect("decoded once wanted again");
+    assert_eq!((img.width, img.height), (1920, 1080));
 }

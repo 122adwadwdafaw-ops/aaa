@@ -111,8 +111,49 @@ var $ = {
   get os() { return "EffectCraft"; },
   get version() { return "EffectCraft scripting"; },
   get locale() { return "en_US"; },
-  evalFile: function () { throw __err("$.evalFile is not supported: scripts can't run scripts"); },
+  // Evaluates the file in the global scope and returns its last value (`timeout` is ignored).
+  evalFile: function (file, timeout) { return __evalFile(__str(file)); },
 };
+
+// ------------------------------------------------------------------ BridgeTalk
+
+// Which application a script runs in, for scripts and frameworks that ask during initialisation.
+// EffectCraft names itself rather than posing as another application; messages to other
+// applications aren't supported.
+function BridgeTalk() {
+  if (!(this instanceof BridgeTalk)) return new BridgeTalk();
+  this.target = "";
+  this.sender = BridgeTalk.appSpecifier;
+  this.body = "";
+  this.type = "ExtendScript";
+  this.headers = {};
+  this.timeout = 0;
+  this.onResult = null;
+  this.onError = null;
+  this.onReceived = null;
+  this.onTimeout = null;
+}
+BridgeTalk.prototype.send = function () {
+  throw __err("BridgeTalk: sending messages to other applications is not supported in EffectCraft");
+};
+BridgeTalk.prototype.sendResult = BridgeTalk.prototype.send;
+BridgeTalk.prototype.toString = function () { return "[object BridgeTalk]"; };
+BridgeTalk.appName = "effectcraft";
+Object.defineProperty(BridgeTalk, "appVersion", { get: function () { return __get("app").buildName; } });
+Object.defineProperty(BridgeTalk, "appSpecifier", { get: function () { return "effectcraft-" + BridgeTalk.appVersion; } });
+BridgeTalk.appLocale = "en_US";
+BridgeTalk.appInstance = "";
+BridgeTalk.appStatus = "idle";
+BridgeTalk.onReceive = null;
+BridgeTalk.__isSelf = function (spec) { return String(spec === undefined || spec === null ? "" : spec).split("-")[0].toLowerCase() === "effectcraft"; };
+BridgeTalk.isRunning = function (spec) { return BridgeTalk.__isSelf(spec); };
+BridgeTalk.launch = function (spec) { return BridgeTalk.__isSelf(spec); };
+BridgeTalk.getSpecifier = function (name) { return BridgeTalk.__isSelf(name) ? BridgeTalk.appSpecifier : null; };
+BridgeTalk.getDisplayName = function (spec) { return BridgeTalk.__isSelf(spec) ? "EffectCraft" : null; };
+BridgeTalk.getTargets = function () { return [BridgeTalk.appName]; };
+BridgeTalk.getStatus = function (spec) { return spec === undefined || BridgeTalk.__isSelf(spec) ? "IDLE" : "ISNOTINSTALLED"; };
+BridgeTalk.bringToFront = function () {};
+BridgeTalk.pump = function () { return false; };
 
 // ------------------------------------------------------------------ File / Folder
 
@@ -339,6 +380,25 @@ var __attr = {
     return c === null ? undefined : c;
   },
 };
+
+// Layers, property groups and properties are callable, like After Effects: `layer("Effects")`,
+// `fx(1)` and `effect("Slider Control")("Slider")` are `.property(...)`. A Proxy is callable
+// only around a function, so the object's state moves onto an arrow function (no `prototype`;
+// its own `name` and `length` are removed so the object's getters show) with the object's
+// prototype; `instanceof` and attribute access are unchanged.
+function __callable(o) {
+  var f = () => undefined;
+  delete f.name;
+  delete f.length;
+  Object.setPrototypeOf(f, Object.getPrototypeOf(o));
+  var keys = Object.keys(o);
+  for (var i = 0; i < keys.length; i++) f[keys[i]] = o[keys[i]];
+  var self = new Proxy(f, {
+    get: __attr.get,
+    apply: function (t, thisArg, args) { return self.property(args[0]); },
+  });
+  return self;
+}
 
 // 1-based collections with `[n]` access.
 var __coll = {
@@ -604,7 +664,7 @@ function PropertyGroup(layer, uid) {
   this.__layer = layer;
   this.__uid = uid;
   this.__kind = "PropertyGroup";
-  return new Proxy(this, __attr);
+  return __callable(this);
 }
 PropertyGroup.prototype = Object.create(PropertyBase.prototype);
 PropertyGroup.prototype.constructor = PropertyGroup;
@@ -647,7 +707,7 @@ function MaskPropertyGroup(layer, uid) {
   this.__layer = layer;
   this.__uid = uid;
   this.__kind = "MaskPropertyGroup";
-  return new Proxy(this, __attr);
+  return __callable(this);
 }
 MaskPropertyGroup.prototype = Object.create(PropertyGroup.prototype);
 MaskPropertyGroup.prototype.constructor = MaskPropertyGroup;
@@ -679,7 +739,7 @@ function Property(layer, uid) {
   this.__layer = layer;
   this.__uid = uid;
   this.__kind = "Property";
-  return new Proxy(this, __attr);
+  return __callable(this);
 }
 Property.prototype = Object.create(PropertyBase.prototype);
 Property.prototype.constructor = Property;
@@ -981,7 +1041,7 @@ Layer.prototype = {
     this.__comp = comp;
     this.__id = id;
     this.__kind = kind;
-    return new Proxy(this, __attr);
+    return __callable(this);
   },
   __info: function () { return __get("layer", { comp: this.__comp, layer: this.__id }); },
   __p: function (o) {
@@ -1804,7 +1864,7 @@ var app = {
     if (!cmd) throw __err("Unknown command id " + id);
     return __call(cmd, {});
   },
-  scheduleTask: function (code, delay, repeat) { return __task("schedule", String(code), !!repeat); },
+  scheduleTask: function (code, delay, repeat) { return __task("schedule", String(code), Number(delay), !!repeat); },
   cancelTask: function (id) { __task("cancel", id); },
   setMemoryUsageLimits: function () {},
   setMultiFrameRenderingConfig: function () {},

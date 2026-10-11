@@ -15,6 +15,10 @@ pub const DEFAULT_SEQUENCE_RATE: FrameRate = FrameRate::FPS_30;
 /// (`effectcraft_engine::sequence`) and probes their first frame here.
 pub fn probe(path: impl AsRef<Path>) -> Result<Footage> {
     let path = path.as_ref();
+    // A movie is read in place (its index), not loaded whole.
+    if let Some(src) = crate::stream::probe_source(path) {
+        return Ok(footage_from_info(&path.to_string_lossy(), src?.info()));
+    }
     let bytes = std::fs::read(path).map_err(|e| MediaError::Io(format!("{}: {e}", path.display())))?;
     if crate::MODEL_EXTENSIONS.contains(&ext_of(path).as_str()) {
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -23,7 +27,7 @@ pub fn probe(path: impl AsRef<Path>) -> Result<Footage> {
     probe_bytes(&path.to_string_lossy(), bytes.into())
 }
 
-/// Probe a 3D model (glTF 2.0 / OBJ): a [`FootageKind::Model`] item whose duration is its
+/// Probe a 3D model (glTF 2.0 / OBJ / STL / FBX): a [`FootageKind::Model`] item whose duration is its
 /// longest animation. `resolve` reads sibling resources.
 pub fn probe_model(path: &str, bytes: &[u8], resolve: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Footage> {
     let m = effectcraft_model::load(path, bytes, resolve).map_err(|e| MediaError::Decode(format!("{path}: {e}")))?;
@@ -31,6 +35,8 @@ pub fn probe_model(path: &str, bytes: &[u8], resolve: &dyn Fn(&str) -> Option<Ve
     let dur = s.animations.iter().map(|a| a.1).fold(0.0f64, f64::max);
     let codec = match effectcraft_model::format_of(path) {
         Some("obj") => "OBJ",
+        Some("stl") => "STL",
+        Some("fbx") => "FBX",
         Some("glb") => "GLB",
         _ => "glTF",
     };
@@ -58,16 +64,26 @@ pub fn probe_model(path: &str, bytes: &[u8], resolve: &dyn Fn(&str) -> Option<Ve
 
 /// Probe in-memory file contents; `path` names the footage (and is stored as `Footage::path`).
 pub fn probe_bytes(path: &str, bytes: Arc<[u8]>) -> Result<Footage> {
+    // DPX / Cineon film scans (our own reader; `image` has none).
+    if let Some(f) = crate::dpx::probe(path, &bytes)? {
+        return Ok(f);
+    }
     if let Some(f) = crate::layered::probe(path, &bytes)? {
         return Ok(f);
     }
     if crate::MODEL_EXTENSIONS.contains(&ext_of(Path::new(path)).as_str()) {
         return probe_model(path, &bytes, &|_| None);
     }
-    if let Ok(fmt) = image::guess_format(&bytes) {
+    if let Some(fmt) = crate::still_format(path, &bytes) {
         // An animated GIF is a movie; one with a single frame is a still.
         if fmt == image::ImageFormat::Gif
             && let Some(f) = crate::gif_anim::probe(path, &bytes)
+        {
+            return Ok(f);
+        }
+        // So is an animated WebP; a still WebP stays a still.
+        if fmt == image::ImageFormat::WebP
+            && let Some(f) = crate::webp_anim::probe(path, &bytes)
         {
             return Ok(f);
         }

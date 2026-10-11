@@ -107,7 +107,7 @@ See [MCP conventions](mcp.md) for core tools, resources, strict arguments, and r
 | `set_property {layer, path, value?, time?, timeBase?, expression?, comp?}` | Sets a static value. With `time` it sets a keyframe (`timeBase: "comp"` for comp seconds); with `expression` it sets an expression. |
 | `add_keyframe {layer, path, time+value \| keys:[...], timeBase?, interpolation?, comp?}` | Adds keys (layer seconds, or comp seconds with `timeBase: "comp"`), then optionally applies linear/bezier/hold/easyEase. |
 | `list_effects {filter?}` | Effect ids, names, categories, GPU / 32-bpc support and parameters. |
-| `list_fonts {query?, rescan?}` | Font families text layers can use, bundled and installed, with their styles, origin and own-language name; `rescan` picks up fonts installed since launch. |
+| `list_fonts {query?, variable?, rescan?}` | Font families text layers can use, bundled and installed, with their styles, origin, whether each is a variable font and own-language name; `variable` lists only variable fonts; `rescan` picks up fonts installed since launch. |
 | `add_effect {layer, effect, values?, comp?}` | Apply an effect and set its parameters in one call and one undo step (a failing value leaves nothing applied); returns the instance path (`effects/#n`) and its parameter paths. |
 | `render_frame {comp?, time?, max_side?, path?, inline?, transparent?}` | Returns a PNG image of a frame; `transparent: true` keeps the alpha (as an RGB + Alpha render writes it) instead of compositing over the comp background. |
 | `open_project {path \| demo \| new}` / `save_project {path?}` | Open and save files. |
@@ -471,6 +471,26 @@ effectcraft-cli run clip.ecproj roto.stroke '{"layer":"#1","points":[[300,200],[
   roto.propagate '{"layer":"#1","wait":true}' roto.freeze '{"layer":"#1","wait":true}' --save
 ```
 
+### Object Matte
+
+The Object Matte tool (third in the Alt+W slot) works in the Composition viewer: click an object,
+or drag a box around it; Shift adds another Object Matte instead of re-prompting the layer's.
+Agents use `objectMatte.apply {layer, point: [x, y], box?: [x0, y0, x1, y1], frame?, track?,
+before?, after?, effect?}` (layer pixels, layer frames; `effect` re-prompts that instance), one
+undo step each. With a trained model installed (Settings ▸ Roto Brush) the box is the model's box
+prompt. `objectMatte.propagate {layer, effect?, direction?, wait?}` tracks the matte over the
+frames around the reference frame in the background (`roto.cancel` stops it; edits to the prompt
+or the layer's frames queue it again), `objectMatte.freeze {wait?}` / `objectMatte.unfreeze`
+store or drop the final mattes, and `objectMatte.status {layer, effect?}` reports the job's
+progress, the frozen state, the tracked frames and which are computed. With the disk cache on (Settings ▸
+Media & Disk Cache), computed Object Matte and Roto Brush segmentations are also kept there, keyed
+by what they are made of, so reopening a project reuses them.
+
+```sh
+effectcraft-cli run clip.ecproj objectMatte.apply '{"layer":"#1","point":[320,200],"box":[250,120,400,300]}' \
+  objectMatte.propagate '{"layer":"#1","wait":true}' objectMatte.freeze '{"layer":"#1","wait":true}' --save
+```
+
 ### Text: styles and editing
 
 Source Text holds character style runs and per-paragraph settings. `layer.setText` changes the
@@ -491,8 +511,9 @@ whole layer, or only characters `range: [start, end]` (character indices): chara
    work on the selected text; `text.endEdit` commits (an empty Type-tool layer is removed).
 
 Fonts: `text.fonts` (MCP `list_fonts`) lists every family a text layer can use, bundled and installed, with its
-styles, origin (`bundled`, `system`, `user`) and own-language name (`{"query":"gothic"}` filters
-by name; `{"rescan":true}` first picks up fonts installed since launch). Pass a listed `family` and
+styles, origin (`bundled`, `system`, `user`), `variable` (it has variation axes) and own-language name
+(`{"query":"gothic"}` filters by name, `{"variable":true}` keeps only variable fonts, like the font
+menu's Variable Fonts filter; `{"rescan":true}` first picks up fonts installed since launch). Pass a listed `family` and
 one of its `styles` to `layer.setText {"font", "style"}`; `text.fontFeatures` says which OpenType
 options a font draws with its own glyphs.
 A tool with its own font library can hand it over without installing it: folders listed in
@@ -512,7 +533,10 @@ Scripts that build ScriptUI windows publish them to the session; agents drive th
 3. `scriptui.click {"widget": "ok"}` presses a button / toggles a checkbox / picks a radio button or
    tab; `scriptui.set {"widget": "#4", "value": "Shot_"}` types into edit text, moves a slider or
    picks a list item (index or text); `scriptui.close {"result": 2}` closes. Controls are addressed
-   by id, `#id`, `properties.name` or text; `window` can be omitted when one window is open. Each
+   by id, `#id`, `properties.name` or text; `window` can be omitted when one window is open.
+   `scriptui.mouse {"widget": "pad", "type": "mousedown", "x": 10, "y": 20}` sends a mouse event
+   (`mousedown`, `mouseup`, `mousemove`, `mouseover`, `mouseout`, `click`; `x`/`y` relative to the
+   control, `button`, `detail`, `shiftKey`…) to the script's `addEventListener` listeners. Each
    returns the handler run's `{ok, output, error}`.
 
 A dialog's `show()` waits for the user: the `script.run` / `file.runScript` reply carries

@@ -4,6 +4,7 @@
 mod align;
 mod align_data;
 mod anim;
+mod anim_presets;
 pub mod anim_tools;
 mod animation;
 pub(crate) mod app_more;
@@ -43,7 +44,7 @@ pub mod panels_cmds;
 pub(crate) mod path_nulls;
 mod paths;
 mod project_items;
-mod prop;
+pub(crate) mod prop;
 mod prop_groups;
 mod proxy;
 pub mod puppet;
@@ -74,6 +75,8 @@ pub(crate) mod watch_folder;
 #[cfg(test)]
 pub(crate) use app_more::report_text as report_text_for_tests;
 pub(crate) use app_more::view_command;
+#[cfg(test)]
+pub(crate) use file::open as open_for_tests;
 #[cfg(test)]
 pub(crate) use keys_more::amplitudes as amplitudes_for_tests;
 #[cfg(test)]
@@ -162,6 +165,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(layer_menu::specs());
         v.extend(create::specs());
         v.extend(animation::specs());
+        v.extend(anim_presets::specs());
         v.extend(view::specs());
         v.extend(viewer_cmds::specs());
         v.extend(shape_stroke::specs());
@@ -219,6 +223,11 @@ pub(crate) fn proxy_set(s: &mut Session, item: ItemId, footage: effectcraft_proj
 /// (id, name) of the text animation presets.
 pub fn text_preset_list() -> Vec<(String, String)> {
     text_anim::preset_names()
+}
+
+/// (id, name, category) of the built-in animation presets (Transitions…).
+pub fn builtin_preset_list() -> Vec<(String, String, String)> {
+    anim_presets::preset_names()
 }
 
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
