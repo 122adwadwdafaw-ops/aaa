@@ -3,6 +3,7 @@
 //! panel lists and cancels a job; Lumetri Scopes switch scope through their dropdown.
 
 use effectcraft_engine::Session;
+use effectcraft_ui_egui::Dialog;
 use effectcraft_ui_egui::EffectcraftApp;
 use effectcraft_ui_egui::dock::PanelKind;
 use egui::{Event, Pos2, pos2};
@@ -56,6 +57,7 @@ fn window_menu_opens_the_new_panels() {
         ("metadata", PanelKind::Metadata, "metadata.projectComment"),
         ("progress", PanelKind::Progress, ""),
         ("contentAwareFill", PanelKind::ContentAwareFill, "contentFill.method"),
+        ("aiChat", PanelKind::AiChat, "aiChat.agent"),
     ] {
         open(&mut h, name);
         assert!(h.state().ui.dock.contains(kind) || h.state().ui.floating.iter().any(|f| f.panels.contains(&kind)), "{name} shown");
@@ -63,6 +65,33 @@ fn window_menu_opens_the_new_panels() {
             assert!(h.state().auto.find(auto).is_some(), "{name}: {auto}");
         }
     }
+}
+
+/// The AI Chat panel's Settings button opens Settings ▸ AI Chat — one click from the panel —
+/// where the Agent Model dropdown offers Claude Opus.
+#[test]
+fn ai_chat_settings_button_opens_its_page() {
+    let mut h = harness();
+    open(&mut h, "aiChat");
+    click(&mut h, "aiChat.settings");
+    h.run_steps(2);
+    assert_eq!(h.state().dialog, Some(Dialog::Settings));
+    assert!(h.state().auto.find("settings.aiChat.bridgeUrl").is_some(), "the AI Chat page is showing");
+    assert!(h.state().auto.find("settings.aiChat.agentModel").is_some(), "the Agent Model dropdown is on the page");
+}
+
+/// Picking an agent in the panel's picker writes the `aiChat.agent` pref — the same key the
+/// Settings page edits — instead of keeping a separate panel-side selection.
+#[test]
+fn ai_chat_picker_persists_the_agent_pref() {
+    let mut h = harness();
+    h.state_mut().session.execute("prefs.set", json!({"key": "aiChat.agent", "value": "codex"})).unwrap();
+    open(&mut h, "aiChat");
+    click(&mut h, "aiChat.agent");
+    h.run_steps(2);
+    h.get_by_label("Ollama (direct)").click();
+    h.run_steps(2);
+    assert_eq!(h.state().session.prefs.ai_chat.agent, "ollama");
 }
 
 #[test]
