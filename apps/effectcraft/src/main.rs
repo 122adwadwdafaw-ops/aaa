@@ -21,6 +21,9 @@ mod control_server;
 mod launch_guard;
 #[cfg(target_os = "macos")]
 mod native_menu;
+// Built everywhere so it stays checked; only the macOS app uses it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod sheet_dialogs;
 
 use effectcraft_ui_egui::EffectcraftApp;
 use serde_json::json;
@@ -207,6 +210,22 @@ fn main() -> eframe::Result {
             app.hooks.pick_save = Some(Box::new(|name: &str| {
                 rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj"]).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
             }));
+            // The window closes after a lost graphics device (#591); say why, unless an agent drives
+            // the app through the control channel.
+            if control_port.is_none() {
+                app.hooks.device_lost = Some(Box::new(|saved: Option<Result<String, String>>| {
+                    let saved = match saved {
+                        Some(Ok(path)) => format!("\n\nYour unsaved changes were saved to:\n{path}\n\nReopen EffectCraft to recover them."),
+                        Some(Err(e)) => format!("\n\nYour unsaved changes could not be saved ({e})."),
+                        None => String::new(),
+                    };
+                    rfd::MessageDialog::new()
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_title("EffectCraft: graphics device lost")
+                        .set_description(format!("The graphics driver stopped responding, so EffectCraft has to close.{saved}"))
+                        .show();
+                }));
+            }
             app.hooks.pick_open_project = Some(Box::new(|| {
                 rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj", "ecprojx"]).pick_file().map(|p| p.to_string_lossy().to_string())
             }));
@@ -227,6 +246,9 @@ fn main() -> eframe::Result {
             }));
             #[cfg(target_os = "macos")]
             {
+                // The commands' file dialogs open as sheets instead of nested modal loops (#511).
+                let ctx = cc.egui_ctx.clone();
+                app.hooks.file_dialog_async = Some(Box::new(move |dialog, done| sheet_dialogs::show(dialog, done, ctx.clone())));
                 app.hooks.app_action = Some(Box::new(native_menu::app_action));
                 app.hooks.clipboard_text = Some(Box::new(native_menu::clipboard_text));
             }

@@ -266,7 +266,6 @@ mod tests {
                     self.accept_warp.then_some(p)
                 });
             });
-            // No renderer here: drop the font-atlas upload, or epaint's drop check panics.
             out.textures_delta.clear();
         }
 
