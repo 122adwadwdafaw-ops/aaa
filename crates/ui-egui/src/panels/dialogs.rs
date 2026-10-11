@@ -70,6 +70,8 @@ pub struct DialogState {
     pub delete_items: super::delete_items::Pending,
     /// Status of the background update check.
     pub update_status: Arc<Mutex<Option<UpdateStatus>>>,
+    /// Whether an automatic startup update check is running silently in the background.
+    pub startup_update_checking: bool,
 }
 
 impl DialogState {
@@ -98,6 +100,38 @@ impl DialogState {
                 *lock = Some(new_status);
             }
         });
+    }
+
+    pub fn start_startup_update_check(&mut self) {
+        self.startup_update_checking = true;
+        self.start_update_check();
+    }
+}
+
+/// Poll a silent startup update check: if a newer version is available, open the dialog.
+pub fn poll_startup_update_check(app: &mut EffectcraftApp) {
+    if !app.dialog_state.startup_update_checking {
+        return;
+    }
+    let status_opt = app
+        .dialog_state
+        .update_status
+        .lock()
+        .ok()
+        .and_then(|s| s.clone());
+    if let Some(status) = status_opt {
+        match status {
+            UpdateStatus::Checking => {}
+            UpdateStatus::Available { .. } => {
+                app.dialog_state.startup_update_checking = false;
+                if app.dialog.is_none() {
+                    app.dialog = Some(Dialog::CheckUpdates);
+                }
+            }
+            UpdateStatus::UpToDate(_) | UpdateStatus::Error(_) => {
+                app.dialog_state.startup_update_checking = false;
+            }
+        }
     }
 }
 

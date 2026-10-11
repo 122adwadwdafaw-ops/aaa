@@ -747,6 +747,7 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         "help.checkUpdates" => {
+            app.dialog_state.startup_update_checking = false;
             app.dialog = Some(crate::Dialog::CheckUpdates);
             app.dialog_state.start_update_check();
             Value::Null
