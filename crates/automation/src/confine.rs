@@ -50,6 +50,8 @@ const READS: &[(&str, &[&str])] = &[
     ("file.importMultiple", &["paths"]),
     ("file.importRecent", &["path"]),
     ("file.importLottie", &["path"]),
+    ("file.importAep", &["path"]),
+    ("file.importAeIr", &["path"]),
     ("file.importTimeline", &["path"]),
     ("file.replaceFootage", &["path"]),
     ("file.relinkFootage", &["folder"]),
