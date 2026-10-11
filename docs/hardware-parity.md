@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (first hardware parity document, from the code and open issues against After Effects 2026 26.5) · **Target:** Adobe After Effects 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (hardware video decode, #804) · **Target:** Adobe After Effects 2026
 
 Each piece of hardware After Effects uses, per platform, against EffectCraft. Ours comes from the
 code at `origin/main` 1446e27 (`crates/gpu`, `crates/render`, `crates/ui-egui`) and the issue
@@ -17,7 +17,7 @@ monitors are missing, and two GPU start-up failures are open.
 | CPU fallback and device-loss recovery | yes | yes | yes; Windows ARM64 Adreno panics after device loss (#591) | yes | yes (#225 fixed) | Out of video memory falls back to the CPU (#106) |
 | GPU detection and choice | GPU info, renderer choice | Backend Auto per comp | "GPU isn't being detected" (#596); Intel HD 5500 fix unverified (#198) | yes | yes | No settings page listing adapters yet |
 | Multi-core rendering | Multi-Frame Rendering | rayon pools; preview scheduler sized to the render pool | same | same | Web Workers, one engine per worker | No benchmark against Multi-Frame Rendering |
-| Hardware video decode | H.264 / HEVC / ProRes (Apple silicon) | none (software, FilmCraft) | none | none | none | FilmCraft has VideoToolbox, Media Foundation/DXVA and VA-API paths to borrow (gap 15) |
+| Hardware video decode | H.264 / HEVC / ProRes (Apple silicon) | H.264 / HEVC via VideoToolbox (untested here) | H.264 / HEVC via Media Foundation / DXVA (untested here) | H.264 / HEVC via NVDEC and VA-API | none (software) | `filmcraft-platform` registered by the desktop app; Settings ▸ Import ▸ Enable Hardware Accelerated Decoding; software fallback; bit-exact with software on Linux (#804); no ProRes (gap 15) |
 | Hardware video encode | H.264 / HEVC via VideoToolbox, NVENC, Quick Sync (render queue and Media Encoder) | none | none | none | none | #498 asks for NVENC; our software encoders are slower and lack B-frames |
 | Video output devices | Mercury Transmit to AJA, Blackmagic, second display | second preview window only (Video Preview) | same | same | — | No SDI/HDMI device output |
 | HDR display | HDR monitoring on EDR / HDR displays | tone-mapped SDR view; no EDR output | no HDR output | no | no | Colour engine handles HDR maths (Rec. 2100 PQ/HLG output files) |
@@ -40,3 +40,4 @@ the Adreno and Intel cases.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | major | First hardware parity document |
+| 2026-10-11 | minor | Hardware video decode through FilmCraft's `filmcraft-platform` (#804) |

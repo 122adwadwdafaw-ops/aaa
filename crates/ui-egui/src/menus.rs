@@ -774,11 +774,12 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
         }
         "app.gpuInfo" => {
             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+            let decoding = app.session.footage.hardware_decoding().map_or_else(|| "software".to_string(), |h| h.summary());
             crate::panels::dialogs::info(
                 app,
                 "GPU Information",
                 &format!(
-                    "Compositing: CPU, {threads} threads (pure Rust, rayon).\nDisplay: egui on wgpu.\nLayer cache: {} MB  •  Preview cache: {} MB.",
+                    "Compositing: CPU, {threads} threads (pure Rust, rayon).\nDisplay: egui on wgpu.\nVideo decoding: {decoding}.\nLayer cache: {} MB  •  Preview cache: {} MB.",
                     app.session.layer_cache.budget() >> 20,
                     app.frames.budget() >> 20
                 ),
