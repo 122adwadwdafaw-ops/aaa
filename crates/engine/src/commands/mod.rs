@@ -7,6 +7,7 @@ mod anim;
 pub mod anim_tools;
 mod animation;
 pub(crate) mod app_more;
+mod audio_cmds;
 mod autotrace;
 mod batch;
 mod camera_cmds;
@@ -25,12 +26,14 @@ pub mod footage_panel;
 pub(crate) mod frame_export;
 mod frontend;
 mod help;
+mod journal;
 mod key_labels;
 mod key_transform;
 mod keys_more;
 mod layer;
 mod layer_menu;
 mod layer_time;
+mod layout_cmds;
 pub(crate) mod link;
 mod liquify;
 mod lottie;
@@ -49,6 +52,8 @@ mod proxy;
 pub mod puppet;
 mod query;
 mod relink;
+
+pub mod render_compare;
 mod render_queue;
 pub(crate) mod rig3d;
 pub mod roto_cmds;
@@ -81,7 +86,7 @@ pub(crate) use mask::split_segment as split_segment_for_tests;
 
 use std::sync::OnceLock;
 
-use effectcraft_project::{Comp, ItemId, Layer, LayerId};
+use effectcraft_project::{Comp, ItemId, Layer, LayerId, PropGroup};
 use effectcraft_time::Tick;
 use serde_json::Value;
 
@@ -157,6 +162,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(time::specs());
         v.extend(render_queue::specs());
         v.extend(help::specs());
+        v.extend(journal::specs());
         v.extend(query::specs());
         v.extend(batch::specs());
         v.extend(layer_menu::specs());
@@ -196,6 +202,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(proxy::specs());
         v.extend(scripts::specs());
         v.extend(panels_cmds::specs());
+        v.extend(layout_cmds::specs());
+        v.extend(audio_cmds::specs());
         v.extend(footage_panel::specs());
         v.extend(autotrace::specs());
         v.extend(scene_detect::specs());
@@ -207,6 +215,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(crate::learn::specs());
         v.extend(crate::templates::specs());
         v.extend(crate::preview::specs());
+        v.extend(render_compare::specs());
+        v.extend(crate::render_view::specs());
         v
     })
 }
@@ -319,7 +329,11 @@ pub fn params_schema(spec: &CommandSpec) -> Value {
             if !optional && !required.contains(&k) {
                 required.push(k.clone());
             }
-            props.insert(k, serde_json::json!({"description": piece}));
+            let mut sch = serde_json::json!({"description": piece});
+            if let Some(t) = param_type(&k, &piece) {
+                sch["type"] = t;
+            }
+            props.insert(k, sch);
         }
     }
     serde_json::json!({
@@ -331,8 +345,36 @@ pub fn params_schema(spec: &CommandSpec) -> Value {
     })
 }
 
+/// The JSON Schema `type` of parameter `key`, read from its piece of the params doc (`index
+/// (1-based)`, `add?: bool`, `layers: [id|name|#n]`, `time? (s)`); `None` when the doc doesn't say.
+/// Index-like keys are integers; their docs say whether they count from 0 or 1.
+fn param_type(key: &str, piece: &str) -> Option<Value> {
+    // The doc after this key (`time? (s) | frame? | timecode?` says nothing about `timecode`).
+    let rest = piece.strip_prefix(key).map(|r| r.trim_start_matches('?').trim_start()).unwrap_or("");
+    let value = rest.strip_prefix(':').map(str::trim).unwrap_or("");
+    let t = if key == "index" || key.ends_with("Index") {
+        serde_json::json!("integer")
+    } else if value.starts_with('[') {
+        serde_json::json!("array")
+    } else if value.starts_with('{') {
+        serde_json::json!("object")
+    } else if value.starts_with("bool") || rest.starts_with("(bool") {
+        serde_json::json!("boolean")
+    } else if ["layer", "comp", "item", "effect", "mask"].contains(&key) {
+        serde_json::json!(["integer", "string"])
+    } else if ["layers", "items", "keys", "effects"].contains(&key) {
+        serde_json::json!("array")
+    } else if key == "time" || rest.starts_with("(s)") || rest.starts_with("(comp s)") || rest.starts_with("(s,") {
+        serde_json::json!("number")
+    } else {
+        return None;
+    };
+    Some(t)
+}
+
 /// Keys every command understands (comp targeting, gesture merging) and accepted aliases.
-const ALWAYS_OK: &[&str] = &["comp", "merge"];
+// `expectRevision` and `client` are execute parameters every command takes (see `Session::execute`).
+const ALWAYS_OK: &[&str] = &["comp", "merge", "expectRevision", "client"];
 const ALIASES: &[(&str, &str)] = &[("layers", "layer"), ("layer", "layers"), ("time", "frame"), ("frameRate", "fps"), ("properties", "property")];
 
 /// Reject unknown top-level parameters (typos, guessed names) with the list of accepted keys.
@@ -452,12 +494,13 @@ pub(crate) fn comp_id(s: &Session, p: &Value) -> Result<ItemId> {
     }
 }
 
-/// Resolve a layer reference: id (number), `#n` / index (1-based), or name.
+/// Resolve a layer reference: id (a number, never a stack position: an unknown id is `None`
+/// rather than silently another layer), `"#n"` (1-based stack position) or name.
 pub(crate) fn resolve_layer(comp: &Comp, v: &Value) -> Option<LayerId> {
     match v {
         Value::Number(n) => {
-            let id = n.as_u64()?;
-            if comp.layer(LayerId(id)).is_some() { Some(LayerId(id)) } else { comp.layers.get((id as usize).checked_sub(1)?).map(|l| l.id) }
+            let id = LayerId(n.as_u64()?);
+            comp.layer(id).map(|_| id)
         }
         Value::String(s) => {
             if let Some(i) = s.strip_prefix('#').and_then(|i| i.parse::<usize>().ok()) {
@@ -469,12 +512,33 @@ pub(crate) fn resolve_layer(comp: &Comp, v: &Value) -> Option<LayerId> {
     }
 }
 
+/// The error text for a layer reference that matches no layer.
+pub(crate) fn no_layer(v: &Value) -> String {
+    format!("no layer {v} (a number is a layer id; use \"#n\" for the n-th layer from the top, or a name from comp.info)")
+}
+
+/// Pick a group (an effect, a mask…) by reference: a number is its uid (never a position),
+/// `"#n"` the n-th group (1-based), any other string its name or match name.
+pub(crate) fn pick_group<'a>(mut groups: impl Iterator<Item = &'a PropGroup>, v: &Value) -> Option<&'a PropGroup> {
+    match v {
+        Value::Number(n) => {
+            let uid = n.as_u64()?;
+            groups.find(|g| g.uid == uid)
+        }
+        Value::String(s) => match s.strip_prefix('#').and_then(|i| i.parse::<usize>().ok()) {
+            Some(i) => groups.nth(i.checked_sub(1)?),
+            None => groups.find(|g| &g.name == s || g.match_id == *s),
+        },
+        _ => None,
+    }
+}
+
 /// `layer` param or the first selected layer.
 pub(crate) fn layer_p(s: &Session, p: &Value, cmd: &str) -> Result<(ItemId, LayerId)> {
     let cid = comp_id(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     if let Some(v) = p.get("layer") {
-        return resolve_layer(comp, v).map(|l| (cid, l)).ok_or_else(|| bad(cmd, format!("no layer {v}")));
+        return resolve_layer(comp, v).map(|l| (cid, l)).ok_or_else(|| bad(cmd, no_layer(v)));
     }
     s.state
         .selected_layers
@@ -490,8 +554,7 @@ pub(crate) fn layers_p(s: &Session, p: &Value) -> Result<(ItemId, Vec<LayerId>)>
     let cid = comp_id(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     // Explicit references that match no layer are an error (agents otherwise get a silent no-op).
-    let resolve =
-        |v: &Value| resolve_layer(comp, v).ok_or_else(|| EngineError::Other(format!("no layer {v} (use a layer id, \"#n\" or a name from comp.info)")));
+    let resolve = |v: &Value| resolve_layer(comp, v).ok_or_else(|| EngineError::Other(no_layer(v)));
     if let Some(Value::Array(a)) = p.get("layers") {
         return Ok((cid, a.iter().map(resolve).collect::<Result<_>>()?));
     }
