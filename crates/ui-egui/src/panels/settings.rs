@@ -219,6 +219,7 @@ pub fn search_settings(all_pages: &[Page], query: &str) -> Vec<SearchHit> {
                         Item::Labels => ("Labels", "labels"),
                         Item::BrowserStorage => ("Browser Storage", "storage"),
                         Item::Models(_) => ("Trained Models", "models"),
+                        _ => ("", ""),
                     };
 
                     let tr_label = tr(en_label);
@@ -415,7 +416,6 @@ fn single_item_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, item: &Item, cur:
             }
         }
     }
-}
 
 /// One page's rows.
 fn page_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, page: &Page, cur: &Value, t: &Tokens, acts: &mut Vec<Act>) {
@@ -851,7 +851,7 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
                 let list_h = (body_h - 36.0).max(60.0);
                 egui::ScrollArea::vertical().id_salt("settings-pages").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
                     if searching {
-                        let (r, _) = ui.allocate_exact_size(vec2(176.0, 24.0), egui::Sense::hover());
+                        let (r, resp) = ui.allocate_exact_size(vec2(176.0, 24.0), egui::Sense::hover());
                         ui.painter().rect_filled(r, 3.0, t.accent);
                         ui.painter().text(
                             r.left_center() + vec2(10.0, 0.0),
@@ -860,7 +860,7 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
                             Tokens::ui(12.5),
                             Color32::WHITE,
                         );
-                        reg(app, "settings.page.search_results", &r, "Search Results");
+                        reg(app, "settings.page.search_results", &resp, "Search Results");
                         ui.add_space(4.0);
                         ui.separator();
                         ui.add_space(4.0);
