@@ -9,8 +9,8 @@ use effectcraft_engine::prefs::Prefs;
 use effectcraft_engine::time::Tick;
 use serde_json::{Value, json};
 
-use crate::confine::Confinement;
 use crate::bridge::SessionJob;
+use crate::confine::Confinement;
 use crate::{BridgeClient, ControlTransport, Error, Result, base64, encode_png, recompress_png};
 
 /// Longest [`Backend::with_session`] waits for an in-process app: its first job waits for the
