@@ -71,6 +71,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 
 # media codecs + containers: FilmCraft's pure-Rust crates, pinned to a revision (plan/adr/0001).
 # Only `crates/media`, `crates/export` and `crates/interchange` may depend on these.
+# The exception is `filmcraft-platform` (hardware video decoding through the operating system:
+# VideoToolbox, Media Foundation, NVDEC, VA-API). It is FilmCraft's one crate with OS FFI (`unsafe`
+# confined to its FFI modules), so only the desktop app binary (`apps/effectcraft`, L6) depends on
+# it and registers its decoders at startup; our own crates stay `unsafe`-free and wasm-clean.
+filmcraft-platform = { git = "https://github.com/storytold/filmcraft", rev = "4e2d0bc2d3646f9cf27ef7aa8b2095c6858c7efe" }
 filmcraft-codecs = { git = "https://github.com/storytold/filmcraft", rev = "4e2d0bc2d3646f9cf27ef7aa8b2095c6858c7efe" }
 filmcraft-media = { git = "https://github.com/storytold/filmcraft", rev = "4e2d0bc2d3646f9cf27ef7aa8b2095c6858c7efe" }
 filmcraft-frame = { git = "https://github.com/storytold/filmcraft", rev = "4e2d0bc2d3646f9cf27ef7aa8b2095c6858c7efe" }
